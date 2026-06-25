@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Resident Doctor Swap</title>
+<meta name="description" content="Find the best person to swap an on-call shift with, using the master rota." />
+<style>
+  :root{
+    --bg:#eef1f0; --surface:#ffffff; --ink:#16242a; --muted:#5e6e73;
+    --line:#e2e7e5; --line-strong:#cdd6d3;
+    --teal:#0e7c7b; --teal-dark:#0a5f5e; --teal-tint:#dcefec;
+    --amber-bg:#fdf4e0; --amber-ink:#8a5a00; --amber-line:#ecd9ad;
+    --danger:#b23a48; --danger-bg:#fbecee;
+    --ok:#0a6b4f; --ok-bg:#e3f4ec;
+    --n-bg:#e7e9f5; --n-ink:#39477e;
+    --d-bg:#fbeed4; --d-ink:#8a5a00;
+    --w-bg:#d8efec; --w-ink:#0a5f5e;
+    --e-bg:#eee5f6; --e-ink:#67459a;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,"Roboto Mono",monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,Helvetica,Arial,sans-serif;
+    --radius:14px; --shadow:0 1px 2px rgba(20,40,45,.06),0 6px 20px rgba(20,40,45,.05);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--ink);font-family:var(--sans);
+    font-size:16px;line-height:1.5;-webkit-font-smoothing:antialiased;
+    padding-bottom:80px}
+  .wrap{max-width:600px;margin:0 auto;padding:0 18px}
+
+  header.top{padding:30px 0 14px}
+  .brandrow{display:flex;align-items:center;gap:11px}
+  .mark{width:34px;height:34px;border-radius:9px;background:var(--teal);
+    position:relative;flex:0 0 auto;box-shadow:var(--shadow)}
+  .mark::before,.mark::after{content:"";position:absolute;background:#fff;border-radius:2px}
+  .mark::before{width:14px;height:4px;left:10px;top:15px}
+  .mark::after{width:4px;height:14px;left:15px;top:10px}
+  h1{font-size:1.42rem;letter-spacing:-.02em;font-weight:700;margin:0;line-height:1.1}
+  .sub{color:var(--muted);font-size:.92rem;margin:7px 0 0}
+  .sub .rng{font-family:var(--mono);font-size:.82rem;color:var(--teal-dark)}
+
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+    box-shadow:var(--shadow);padding:18px;margin:14px 0}
+  .step-num{font-family:var(--mono);font-size:.72rem;letter-spacing:.14em;
+    text-transform:uppercase;color:var(--teal-dark);font-weight:600}
+  .step-h{font-size:1.06rem;font-weight:650;margin:3px 0 2px;letter-spacing:-.01em}
+  .step-help{color:var(--muted);font-size:.88rem;margin:0 0 13px}
+
+  label.fld{display:block;font-size:.82rem;color:var(--muted);margin:0 0 6px;font-weight:550}
+  select,input[type=date]{width:100%;font-family:var(--sans);font-size:1rem;color:var(--ink);
+    background:#fff;border:1.5px solid var(--line-strong);border-radius:10px;padding:12px 12px;appearance:none}
+  select:focus,input:focus,button:focus-visible{outline:2.5px solid var(--teal);outline-offset:2px}
+
+  #person-meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}
+  .tag{font-size:.74rem;font-family:var(--mono);background:#eef3f2;color:var(--teal-dark);
+    border:1px solid var(--line);border-radius:999px;padding:3px 9px;white-space:nowrap}
+
+  .chip{display:inline-flex;align-items:center;font-family:var(--mono);font-weight:650;
+    font-size:.72rem;letter-spacing:.03em;padding:3px 7px;border-radius:6px;line-height:1}
+  .chip-NIGHT{background:var(--n-bg);color:var(--n-ink)}
+  .chip-DAY{background:var(--d-bg);color:var(--d-ink)}
+  .chip-WARD{background:var(--w-bg);color:var(--w-ink)}
+  .chip-E{background:var(--e-bg);color:var(--e-ink)}
+
+  .shift-row{display:flex;align-items:center;gap:12px;justify-content:space-between;
+    border:1.5px solid var(--line);border-radius:12px;padding:11px 12px;margin:8px 0;
+    transition:border-color .15s,background .15s}
+  .shift-row.selected{border-color:var(--teal);background:var(--teal-tint)}
+  .shift-main{min-width:0}
+  .shift-dates{display:flex;flex-wrap:wrap;gap:6px 10px}
+  .shift-day{display:flex;align-items:center;gap:6px}
+  .shift-date{font-size:.84rem;color:var(--ink)}
+  .rest{font-size:.74rem;color:var(--muted);margin-top:6px}
+  button.pick{flex:0 0 auto;font-size:.82rem;font-weight:600;border:1.5px solid var(--teal);
+    color:var(--teal-dark);background:#fff;border-radius:999px;padding:8px 13px;cursor:pointer}
+  .shift-row.selected button.pick{background:var(--teal);color:#fff;border-color:var(--teal)}
+
+  .empty{color:var(--muted);font-size:.9rem;font-style:italic;margin:6px 0 0}
+
+  .unavail-controls{display:flex;gap:8px}
+  .unavail-controls input{flex:1}
+  button.ghost{font-size:.85rem;font-weight:600;border:1.5px solid var(--line-strong);
+    background:#fff;color:var(--ink);border-radius:10px;padding:0 14px;cursor:pointer}
+  #unavail-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:11px}
+  .pill{font-size:.78rem;background:#f2f5f4;border:1px solid var(--line);border-radius:999px;
+    padding:4px 6px 4px 11px;display:inline-flex;align-items:center;gap:4px}
+  .pill-x{border:none;background:none;font-size:1rem;line-height:1;color:var(--muted);
+    cursor:pointer;padding:0 4px}
+  #unavail-msg{font-size:.78rem;color:var(--danger);min-height:1em;margin-top:6px}
+
+  button.primary{display:inline-flex;align-items:center;justify-content:center;gap:8px;
+    width:100%;font-size:1rem;font-weight:650;color:#fff;background:var(--teal);
+    border:none;border-radius:12px;padding:15px;cursor:pointer;box-shadow:var(--shadow);
+    margin-top:6px}
+  button.primary:hover{background:var(--teal-dark)}
+
+  .res-h{font-size:.78rem;font-family:var(--mono);letter-spacing:.1em;text-transform:uppercase;
+    color:var(--muted);margin:22px 2px 6px;font-weight:600}
+  .summary .kicker{font-size:.74rem;font-family:var(--mono);letter-spacing:.12em;
+    text-transform:uppercase;color:var(--teal-dark);font-weight:600;margin-bottom:8px}
+  .sum-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:5px 0}
+  .sum-dates{font-size:.86rem;color:var(--ink)}
+
+  .swap{position:relative;border:1.5px solid var(--line)}
+  .swap.top{border-color:var(--teal);box-shadow:0 0 0 3px var(--teal-tint),var(--shadow)}
+  .ribbon{position:absolute;top:-10px;right:14px;background:var(--teal);color:#fff;
+    font-size:.68rem;font-family:var(--mono);letter-spacing:.08em;text-transform:uppercase;
+    padding:3px 9px;border-radius:999px;font-weight:600}
+  .swap-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:4px}
+  .slot{font-weight:700;font-size:1.05rem;letter-spacing:-.01em}
+  .exchange{border:1px solid var(--line);border-radius:11px;padding:11px;margin-top:11px;
+    background:#fbfcfc}
+  .leg{display:flex;flex-wrap:wrap;align-items:center;gap:7px}
+  .leg-label{font-size:.72rem;font-family:var(--mono);text-transform:uppercase;letter-spacing:.06em;
+    color:var(--muted);width:74px;flex:0 0 auto}
+  .leg-dates{font-size:.84rem}
+  .swap-arrow{font-size:1.1rem;color:var(--teal);text-align:center;margin:4px 0 4px 74px;line-height:1}
+  .equity{font-size:.74rem;color:var(--muted);margin-top:8px;padding-top:8px;border-top:1px dashed var(--line)}
+  .warns{margin-top:11px;display:flex;flex-direction:column;gap:5px}
+  .warn{font-size:.8rem;background:var(--amber-bg);color:var(--amber-ink);
+    border:1px solid var(--amber-line);border-radius:8px;padding:7px 9px}
+  .clean{font-size:.8rem;color:var(--ok);background:var(--ok-bg);border-radius:8px;
+    padding:7px 9px;margin-top:11px}
+  .cover .cover-note{font-size:.84rem;color:var(--muted);margin:4px 0 0}
+  .note{background:var(--amber-bg);border-color:var(--amber-line)}
+  .note p{margin:6px 0 0;font-size:.88rem;color:var(--amber-ink)}
+
+  details.why{margin:18px 0 8px}
+  details.why summary{cursor:pointer;font-size:.84rem;color:var(--muted);font-weight:550}
+  details.why ul{margin:10px 0 0;padding-left:18px}
+  details.why li{font-size:.82rem;color:var(--muted);margin:4px 0}
+  details.about{margin-top:14px}
+  details.about summary{cursor:pointer;font-size:.85rem;color:var(--teal-dark);font-weight:600}
+  details.about .body{font-size:.86rem;color:var(--muted);margin-top:10px}
+  details.about li{margin:5px 0}
+
+  footer{color:var(--muted);font-size:.78rem;text-align:center;padding:30px 0 10px}
+  .hide{display:none}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brandrow"><div class="mark" aria-hidden="true"></div>
+      <h1>Resident Doctor Swap</h1></div>
+    <p class="sub">Find the best person to ask for an on-call swap, straight from the master rota.
+      Covering <span class="rng" id="rota-range"></span>.</p>
+  </header>
+
+  <section class="card" id="step1">
+    <div class="step-num">Step 1</div>
+    <div class="step-h">Who are you?</div>
+    <p class="step-help">Pick your slot on the rota. Slots with an a/b share one line but start at different times of the year.</p>
+    <label class="fld" for="person">Your rota slot</label>
+    <select id="person"><option value="">Select your slot…</option></select>
+    <div id="person-meta"></div>
+  </section>
+
+  <section class="card hide" id="step2">
+    <div class="step-num">Step 2</div>
+    <div class="step-h">Which shift do you want off?</div>
+    <p class="step-help">These are your swappable on-call shifts. Tap the one you want covered. Night blocks swap as a whole.</p>
+    <div id="shifts"></div>
+
+    <div id="unavail-wrap" class="hide" style="margin-top:16px">
+      <label class="fld" for="unavail-date">Optional — dates you can’t take a shift in return</label>
+      <div class="unavail-controls">
+        <input type="date" id="unavail-date" />
+        <button class="ghost" id="unavail-add" type="button">Add</button>
+      </div>
+      <div id="unavail-msg"></div>
+      <div id="unavail-list"></div>
+    </div>
+
+    <button class="primary hide" id="find" type="button">Find the best swap ⇅</button>
+  </section>
+
+  <section id="results"></section>
+
+  <details class="about">
+    <summary>How matches are chosen</summary>
+    <div class="body">
+      <p>The tool looks for a clean two-way swap: someone takes your shift on the day you want off, and you take an equivalent shift of theirs on another day, so neither of you changes how many on-calls you do.</p>
+      <ul>
+        <li><strong>Like for like.</strong> Day swaps with Day, Ward with Ward, and Evening (E) with Evening. N1 and N2 are both nights, so they swap freely with each other.</li>
+        <li><strong>Rest is protected.</strong> No one is offered a shift on an LTFT day, a black-outlined protected day, or a rest day straight after their own on-call block.</li>
+        <li><strong>Nights stay legal.</strong> A swap is never suggested if it would put either of you over four nights in a row.</li>
+        <li><strong>People only count when on the rota.</strong> Someone is only suggested if their rota has started (their cells are filled in) on the dates involved.</li>
+        <li><strong>Best match first.</strong> Swaps are ranked by how closely the days off before and after line up, and by having no rest-day warnings.</li>
+      </ul>
+      <p>It’s a suggestion engine — the rota team still makes the final change. Always sanity-check before asking someone.</p>
+    </div>
+  </details>
+
+  <footer>The rota is read-only here. Swaps are arranged with the rota team.</footer>
+</div>
+
+<script src="data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
