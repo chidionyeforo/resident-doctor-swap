@@ -1,5 +1,10 @@
-# Static site — no build step needed.
-# Publishes the repository root as-is.
+# Static site + one serverless function (shared availability store).
+# No build step for the site itself; Netlify auto-installs the function's
+# dependency (@netlify/blobs) and wires up the blob store with no extra config.
 [build]
   publish = "."
   command = ""
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"

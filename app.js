@@ -71,7 +71,8 @@
     return blocks;
   };
 
-  // Count protected rest days (OFF / LTFT / not-on-rota) immediately before & after a block.
+  // Count protected rest days (OFF / LTFT / not-on-rota) immediately before & after
+  // a block, AND record the explicit OFF-day indices that travel with the shift.
   Engine.prototype._annotateRest = function (label, block) {
     var offish = { OFF: 1, LTFT: 1, INACTIVE: 1 };
     var before = 0, i = block.start - 1;
@@ -80,6 +81,15 @@
     while (j < n && offish[this.cell(label, j).s]) { after++; j++; }
     block.offBefore = before; block.offAfter = after;
     block.len = block.idxs.length;
+
+    // Rest days that TRAVEL with a like-for-like swap = the protected OFF days
+    // (not LTFT, which is personal, and not INACTIVE) directly either side,
+    // capped so we show the relevant rest envelope only.
+    var rb = [], k = block.start - 1, CAP = 3;
+    while (k >= 0 && this.cell(label, k).s === "OFF" && rb.length < CAP) { rb.unshift(k); k--; }
+    var ra = [], m = block.end + 1;
+    while (m < n && this.cell(label, m).s === "OFF" && ra.length < CAP) { ra.push(m); m++; }
+    block.restBeforeIdxs = rb; block.restAfterIdxs = ra;
   };
 
   // Night indices a person currently works.
@@ -94,9 +104,22 @@
     ks.forEach(function (k) { run = (prev !== null && k === prev + 1) ? run + 1 : 1; prev = k; if (run > best) best = run; });
     return best;
   }
+  // Would `label`'s night run stay <= 4 after giving away `removeIdxs` nights and
+  // taking on `addIdxs` nights? (idx arrays of night-class days)
+  Engine.prototype._nightRunOk = function (label, removeIdxs, addIdxs) {
+    var set = this._nightSet(label);
+    (removeIdxs || []).forEach(function (i) { delete set[i]; });
+    (addIdxs || []).forEach(function (i) { set[i] = 1; });
+    return maxRun(set) <= 4;
+  };
+  function nightIdxsOf(self, label, block) {
+    return block.idxs.filter(function (i) { return shiftClass(self.cell(label, i).v) === "NIGHT"; });
+  }
 
   // Can `label` work a NEW shift on day `idx`? Returns {ok, hard, warn, reason}.
-  Engine.prototype.freeToWork = function (label, idx) {
+  // `pref` (optional) = that person's stored unavailability set {idx:1}.
+  Engine.prototype.freeToWork = function (label, idx, pref) {
+    if (pref && pref[idx]) return { ok: false, reason: "flagged themselves unavailable on this date" };
     var c = this.cell(label, idx);
     if (c.s === "INACTIVE") return { ok: false, reason: "not on the rota on this date" };
     if (c.b) return { ok: false, reason: "protected (black-outlined) day — must stay off" };
@@ -118,14 +141,21 @@
           + Math.abs(a.len - b.len) * 0.5;
     return s;
   }
+  // Do two same-class blocks carry an equivalent rest envelope (OFF days either side)?
+  function restMatches(a, b) {
+    return a.restBeforeIdxs.length === b.restBeforeIdxs.length
+        && a.restAfterIdxs.length === b.restAfterIdxs.length;
+  }
 
   /* Core search.
      reqLabel: requester's slot label
-     selIdxs: array of day-indices the requester wants off (each is one of their on-call days)
-     unavail: object set of day-indices the requester cannot swap INTO (optional)
-     Returns { reqBlocks, swaps:[...], coverOnly:[...], ineligible:[...] } */
-  Engine.prototype.findSwaps = function (reqLabel, selIdxs, unavail) {
+     selIdxs:  array of day-indices the requester wants off (each is one of their on-call days)
+     unavail:  object set of day-indices the requester cannot swap INTO (optional)
+     prefs:    map { label: { unavail: {idx:1} } } of everyone's stored unavailability (optional)
+     Returns { reqBlocks, swaps:[...], chains:[...], coverOnly:[...], ineligible:[...] } */
+  Engine.prototype.findSwaps = function (reqLabel, selIdxs, unavail, prefs) {
     unavail = unavail || {};
+    prefs = prefs || {};
     var self = this;
     var sel = {}; selIdxs.forEach(function (i) { sel[i] = 1; });
     var reqBlocks = this.groupBlocks(reqLabel, selIdxs);
@@ -136,12 +166,13 @@
     this.data.staff.forEach(function (C) {
       if (!C.candidate || C.label === reqLabel) return;
       var cl = C.label;
+      var cPref = (prefs[cl] || {}).unavail || null;
       var warnings = [], reasons = [];
 
       // --- INCOMING: can C take every selected day? ---
       var incomingOk = true;
       selIdxs.forEach(function (i) {
-        var f = self.freeToWork(cl, i);
+        var f = self.freeToWork(cl, i, cPref);
         if (!f.ok) { incomingOk = false; reasons.push(C.label + " can't take " + self.data.dates[i].iso + ": " + f.reason); }
         else if (f.warn) warnings.push("On " + self.data.dates[i].iso + ", " + f.warn);
       });
@@ -156,7 +187,6 @@
       // --- RETURN: a compatible shift from C that the requester can take ---
       var cBlocks = self.groupBlocks(cl, self.oncallShifts(cl).map(function (s) { return s.idx; }))
         .filter(function (b) { return b.idxs.every(function (i) { return !sel[i]; }); });
-      var usedReturnNight = {};               // nights R would gain
       var assignments = [], allMatched = true;
 
       reqBlocks.forEach(function (rb) {
@@ -185,7 +215,15 @@
         assignments.forEach(function (a) { if (a.rb.cls === "NIGHT") a.cb.idxs.forEach(function (i) { rn[i] = 1; }); });
         if (maxRun(rn) > 4) { ineligible.push({ label: C.label, reasons: ["This swap would put you over 4 nights in a row"] }); return; }
 
-        var score = 0; assignments.forEach(function (a) { score += a.sc; a.rWarn.forEach(function (w) { warnings.push(w); }); });
+        var score = 0;
+        assignments.forEach(function (a) {
+          score += a.sc;
+          a.rWarn.forEach(function (w) { warnings.push(w); });
+          if (!restMatches(a.rb, a.cb)) {
+            warnings.push("Rest days either side differ (" + a.rb.restBeforeIdxs.length + "/" + a.rb.restAfterIdxs.length +
+              " vs " + a.cb.restBeforeIdxs.length + "/" + a.cb.restAfterIdxs.length + ") — the off days travel with the shift, so one of you changes rest");
+          }
+        });
         swaps.push({ label: C.label, grade: C.grade, dept: C.dept, assignments: assignments, score: score, warnings: warnings });
       } else {
         coverOnly.push({ label: C.label, grade: C.grade, dept: C.dept, warnings: warnings });
@@ -198,7 +236,103 @@
       return ("" + a.label).localeCompare("" + b.label, undefined, { numeric: true });
     }
     swaps.sort(rank); coverOnly.sort(rank);
-    return { reqBlocks: reqBlocks, swaps: swaps, coverOnly: coverOnly, ineligible: ineligible };
+
+    // --- LAST RESORT: 3-way (cyclic) swaps -------------------------------
+    // Only when no clean direct swap exists, and the request is a single block
+    // (the common case). Keeps the search bounded and the result explainable.
+    var chains = [];
+    if (!swaps.length && reqBlocks.length === 1) {
+      chains = this._findChains(reqLabel, reqBlocks[0], sel, unavail, prefs);
+    }
+
+    return { reqBlocks: reqBlocks, swaps: swaps, chains: chains, coverOnly: coverOnly, ineligible: ineligible };
+  };
+
+  /* Three-way cyclic swap for a single request block `rb` (class K):
+       C takes your block (rb)
+       D takes C's block (cb)
+       you take D's block (db)
+     Every person gives one block and receives one block, all class K, none
+     overlapping, everyone free (incl. stored unavailability) and within the
+     4-nights ceiling. Returns ranked chain objects. */
+  Engine.prototype._findChains = function (reqLabel, rb, sel, unavail, prefs) {
+    var self = this, K = rb.cls, out = [], seen = {};
+    var rbNights = nightIdxsOf(self, reqLabel, rb);
+
+    function prefOf(l) { return (prefs[l] || {}).unavail || null; }
+    function blocksOf(l) {
+      return self.groupBlocks(l, self.oncallShifts(l).map(function (s) { return s.idx; }))
+        .filter(function (b) { return b.cls === K; });
+    }
+    // free on every day of `block`. excludeSel=true also rejects the
+    // requester's wanted-off days (used for RETURN blocks, never for the
+    // requested block itself — that one the taker is *meant* to take).
+    function freeAll(l, block, pref, excludeSel) {
+      return block.idxs.every(function (i) {
+        if (excludeSel && sel[i]) return false;
+        return self.freeToWork(l, i, pref).ok;
+      });
+    }
+
+    // takers C: free to take your block (rb is the requested block; don't
+    // exclude sel here, those are precisely the days C is taking on)
+    this.data.staff.forEach(function (C) {
+      if (!C.candidate || C.label === reqLabel) return;
+      var cPref = prefOf(C.label);
+      if (!freeAll(C.label, rb, cPref, false)) return;
+      if (!self._nightRunOk(C.label, [], rbNights)) return; // C gains your nights
+
+      var cBlocks = blocksOf(C.label).filter(function (b) { return b.idxs.every(function (i) { return !sel[i]; }); });
+
+      cBlocks.forEach(function (cb) {
+        var cbNights = nightIdxsOf(self, C.label, cb);
+        // C gives cb, gains rb — recheck C with the give-and-take
+        if (!self._nightRunOk(C.label, cbNights, rbNights)) return;
+
+        self.data.staff.forEach(function (D) {
+          if (!D.candidate || D.label === reqLabel || D.label === C.label) return;
+          var dPref = prefOf(D.label);
+          if (!freeAll(D.label, cb, dPref, true)) return;          // D takes cb
+
+          var dBlocks = blocksOf(D.label).filter(function (b) {
+            return b.idxs.every(function (i) { return !sel[i] && cb.idxs.indexOf(i) < 0; });
+          });
+
+          dBlocks.forEach(function (db) {
+            var dbNights = nightIdxsOf(self, D.label, db);
+            // D gives db, gains cb
+            if (!self._nightRunOk(D.label, dbNights, cbNights)) return;
+            // you take db: free + within your own unavailability + nights ceiling
+            var youOk = db.idxs.every(function (i) {
+              if (unavail[i] || sel[i]) return false;
+              return self.freeToWork(reqLabel, i).ok;
+            });
+            if (!youOk) return;
+            if (!self._nightRunOk(reqLabel, rbNights, dbNights)) return; // you give rb, gain db
+
+            var key = C.label + ">" + D.label + ":" + cb.start + ":" + db.start;
+            if (seen[key]) return; seen[key] = 1;
+
+            var score = equity(rb, cb) + equity(cb, db) + equity(db, rb);
+            var warnings = [];
+            if (!restMatches(rb, cb) || !restMatches(cb, db) || !restMatches(db, rb))
+              warnings.push("Rest days either side aren't identical across all three — check the off days travel cleanly");
+
+            out.push({
+              C: { label: C.label, grade: C.grade, dept: C.dept },
+              D: { label: D.label, grade: D.grade, dept: D.dept },
+              rb: rb, cb: cb, db: db, score: score, warnings: warnings
+            });
+          });
+        });
+      });
+    });
+
+    out.sort(function (a, b) {
+      if (a.warnings.length !== b.warnings.length) return a.warnings.length - b.warnings.length;
+      return a.score - b.score;
+    });
+    return out.slice(0, 6);
   };
 
   global.RotaEngine = Engine;
@@ -211,6 +345,8 @@
   var data = global.ROTA_DATA;
   var engine = new Engine(data);
   var state = { person: null, selected: {}, unavail: {} };
+  var allPrefs = {};      // { label: { unavail:[iso,...], updated:iso } }
+  var prefsMap = {};      // { label: { unavail:{idx:1} } } for the engine
 
   var $ = function (s) { return document.querySelector(s); };
   function el(tag, cls, txt) { var e = document.createElement(tag); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; }
@@ -220,6 +356,39 @@
     return (dow ? dow + " " : "") + s;
   }
   function chip(type) { var c = el("span", "chip chip-" + shiftClass(type), type); return c; }
+
+  // ---- shared preference store -------------------------------------------
+  // Tries the Netlify function (shared across everyone). Falls back to this
+  // browser's localStorage if the backend isn't reachable (e.g. opened locally).
+  var Store = {
+    ENDPOINT: "/.netlify/functions/prefs",
+    CACHE: "rds_prefs_cache",
+    shared: false,
+    loadAll: function () {
+      var self = this;
+      return fetch(this.ENDPOINT, { cache: "no-store" })
+        .then(function (r) { if (!r.ok) throw new Error("no backend"); return r.json(); })
+        .then(function (j) { self.shared = true; try { localStorage.setItem(self.CACHE, JSON.stringify(j)); } catch (e) {} return j || {}; })
+        .catch(function () { self.shared = false; try { return JSON.parse(localStorage.getItem(self.CACHE) || "{}"); } catch (e) { return {}; } });
+    },
+    save: function (label, prefs) {
+      var self = this;
+      // optimistic local cache update so it survives a reload either way
+      try { var all = JSON.parse(localStorage.getItem(self.CACHE) || "{}"); all[label] = prefs; localStorage.setItem(self.CACHE, JSON.stringify(all)); } catch (e) {}
+      return fetch(this.ENDPOINT, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label: label, prefs: prefs })
+      }).then(function (r) { self.shared = r.ok; return r.ok; })
+        .catch(function () { self.shared = false; return false; });
+    }
+  };
+  function rebuildPrefsMap() {
+    prefsMap = {};
+    Object.keys(allPrefs).forEach(function (lbl) {
+      var u = {}; (allPrefs[lbl].unavail || []).forEach(function (iso) { var i = engine.idxByIso[iso]; if (i != null) u[i] = 1; });
+      prefsMap[lbl] = { unavail: u };
+    });
+  }
 
   // Populate the person picker
   (function initPicker() {
@@ -231,14 +400,17 @@
       o.textContent = s.label + "  ·  " + s.grade + "  ·  " + s.dept + (s.hasOncall ? "" : "  (no on-calls)");
       sel.appendChild(o);
     });
-    sel.addEventListener("change", function () { state.person = sel.value || null; state.selected = {}; state.unavail = {}; renderPerson(); });
+    sel.addEventListener("change", function () {
+      state.person = sel.value || null; state.selected = {}; state.unavail = {};
+      renderPerson(); renderPrefs();
+    });
   })();
 
   function renderPerson() {
     var wrap = $("#shifts"); wrap.innerHTML = "";
     $("#results").innerHTML = "";
     $("#unavail-wrap").style.display = "none";
-    if (!state.person) { $("#step2").style.display = "none"; return; }
+    if (!state.person) { $("#step2").style.display = "none"; $("#prefs-wrap").style.display = "none"; return; }
     var s = engine.staffByLabel[state.person];
     var shifts = engine.oncallShifts(state.person);
     $("#step2").style.display = "block";
@@ -250,7 +422,6 @@
 
     if (!shifts.length) { wrap.appendChild(el("p", "empty", "This person holds no swappable on-call shifts in the rota.")); return; }
 
-    // group into blocks for display
     var blocks = engine.groupBlocks(state.person, shifts.map(function (x) { return x.idx; }));
     blocks.forEach(function (b) {
       var card = el("div", "shift-row");
@@ -290,7 +461,72 @@
     if (!any) $("#results").innerHTML = "";
   }
 
-  // Optional "unavailable to swap into" date picker
+  // ---- My availability (shared preferences) ------------------------------
+  (function initPrefs() {
+    var input = $("#pref-date");
+    input.min = data.dateStart; input.max = data.dateEnd;
+    $("#pref-add").addEventListener("click", function () {
+      if (!state.person) return;
+      var iso = input.value; if (!iso) return;
+      if (engine.idxByIso[iso] == null) { flash($("#pref-msg"), "That date isn't in the rota period."); return; }
+      var p = allPrefs[state.person] || { unavail: [] };
+      if (p.unavail.indexOf(iso) < 0) p.unavail.push(iso);
+      p.unavail.sort();
+      p.updated = new Date().toISOString().slice(0, 10);
+      allPrefs[state.person] = p;
+      input.value = "";
+      persistPrefs();
+    });
+  })();
+
+  function persistPrefs() {
+    var label = state.person;
+    var statusNode = $("#pref-status");
+    statusNode.textContent = "Saving…"; statusNode.className = "prefstatus saving";
+    Store.save(label, allPrefs[label]).then(function (ok) {
+      rebuildPrefsMap(); syncRequesterUnavail(); renderPrefs();
+      statusNode.textContent = ok
+        ? "Saved — visible to everyone using the swap shop."
+        : "Saved on this device only (shared store not set up — see README).";
+      statusNode.className = "prefstatus " + (ok ? "ok" : "local");
+    });
+  }
+
+  // Remove one stored unavailable date for the current person.
+  function removePref(iso) {
+    var p = allPrefs[state.person]; if (!p) return;
+    p.unavail = (p.unavail || []).filter(function (x) { return x !== iso; });
+    p.updated = new Date().toISOString().slice(0, 10);
+    persistPrefs();
+  }
+
+  function renderPrefs() {
+    var wrap = $("#prefs-wrap");
+    if (!state.person) { wrap.style.display = "none"; return; }
+    wrap.style.display = "block";
+    var list = $("#pref-list"); list.innerHTML = "";
+    var p = allPrefs[state.person] || { unavail: [] };
+    if (!p.unavail || !p.unavail.length) {
+      list.appendChild(el("span", "empty", "No dates flagged. You'll be offered for any shift you're free for."));
+    } else {
+      p.unavail.slice().sort().forEach(function (iso) {
+        var d = data.dates[engine.idxByIso[iso]];
+        var t = el("span", "pill", d ? fmt(d.iso, d.dow) : iso);
+        var x = el("button", "pill-x", "×"); x.addEventListener("click", function () { removePref(iso); });
+        t.appendChild(x); list.appendChild(t);
+      });
+    }
+    syncRequesterUnavail();
+  }
+
+  // Your own stored unavailability pre-fills the "can't take in return" set.
+  function syncRequesterUnavail() {
+    var p = allPrefs[state.person]; if (!p) return;
+    (p.unavail || []).forEach(function (iso) { var i = engine.idxByIso[iso]; if (i != null) state.unavail[i] = 1; });
+    if ($("#unavail-list")) renderUnavail();
+  }
+
+  // Optional "unavailable to swap into" date picker (one-off, this search only)
   (function initUnavail() {
     var input = $("#unavail-date");
     input.min = data.dateStart; input.max = data.dateEnd;
@@ -314,8 +550,12 @@
   $("#find").addEventListener("click", function () {
     var selIdxs = Object.keys(state.selected).map(Number);
     if (!selIdxs.length) return;
-    var res = engine.findSwaps(state.person, selIdxs, state.unavail);
-    renderResults(res);
+    // refresh shared prefs right before searching so we respect the latest flags
+    Store.loadAll().then(function (j) {
+      allPrefs = j || {}; rebuildPrefsMap();
+      var res = engine.findSwaps(state.person, selIdxs, state.unavail, prefsMap);
+      renderResults(res);
+    });
   });
 
   function renderResults(res) {
@@ -323,13 +563,23 @@
     root.appendChild(summaryCard(res.reqBlocks));
 
     if (res.swaps.length) {
-      root.appendChild(el("h3", "res-h", "Best people to ask (full swap)"));
+      root.appendChild(el("h3", "res-h", "Best people to ask (direct two-way swap)"));
       res.swaps.slice(0, 8).forEach(function (sw, i) { root.appendChild(swapCard(sw, i === 0)); });
+    } else if (res.chains && res.chains.length) {
+      var n0 = el("div", "card note");
+      n0.appendChild(el("strong", null, "No direct two-way swap — here are three-way options."));
+      n0.appendChild(el("p", null, "No single person can both take your shift and give you an equivalent one back. These three-way swaps close the loop instead, so everyone keeps the same number of on-calls."));
+      root.appendChild(n0);
     } else {
       var none = el("div", "card note");
-      none.appendChild(el("strong", null, "No clean reciprocal swap found."));
-      none.appendChild(el("p", null, "No one currently has a matching shift to trade back for every block you selected. The people below could cover your shift; the rota team would arrange a return shift manually."));
+      none.appendChild(el("strong", null, "No clean swap found."));
+      none.appendChild(el("p", null, "No one currently has a matching shift to trade back, and no three-way loop works either. The people below could cover your shift; the rota team would arrange a return shift manually."));
       root.appendChild(none);
+    }
+
+    if (res.chains && res.chains.length) {
+      root.appendChild(el("h3", "res-h", "Three-way swaps (last resort)"));
+      res.chains.slice(0, 5).forEach(function (ch, i) { root.appendChild(chainCard(ch, !res.swaps.length && i === 0)); });
     }
 
     if (res.coverOnly.length) {
@@ -361,6 +611,24 @@
     return c;
   }
 
+  function datesLine(idxs) { return idxs.map(function (i) { return fmt(data.dates[i].iso, data.dates[i].dow); }).join(" · "); }
+  function restTravel(block) {
+    var n = block.restBeforeIdxs.length + block.restAfterIdxs.length;
+    if (!n) return null;
+    var parts = [];
+    if (block.restBeforeIdxs.length) parts.push(block.restBeforeIdxs.length + " before");
+    if (block.restAfterIdxs.length) parts.push(block.restAfterIdxs.length + " after");
+    return "+ rest days travel with it (" + parts.join(", ") + " off)";
+  }
+
+  function legRow(label, who, idxs, ownerLabel) {
+    var r = el("div", "leg");
+    r.appendChild(el("span", "leg-label", who));
+    idxs.forEach(function (i) { r.appendChild(chip(engine.cell(ownerLabel, i).v)); });
+    r.appendChild(el("span", "leg-dates", datesLine(idxs)));
+    return r;
+  }
+
   function swapCard(sw, top) {
     var c = el("div", "card swap" + (top ? " top" : ""));
     if (top) c.appendChild(el("div", "ribbon", "Best match"));
@@ -372,15 +640,11 @@
 
     sw.assignments.forEach(function (a) {
       var ex = el("div", "exchange");
-      var r1 = el("div", "leg");
-      r1.appendChild(el("span", "leg-label", "They take"));
-      a.rb.idxs.forEach(function (i) { r1.appendChild(chip(engine.cell(state.person, i).v)); });
-      r1.appendChild(el("span", "leg-dates", a.rb.idxs.map(function (i) { return fmt(data.dates[i].iso, data.dates[i].dow); }).join(" · ")));
-      var r2 = el("div", "leg");
-      r2.appendChild(el("span", "leg-label", "You take"));
-      a.cb.idxs.forEach(function (i) { r2.appendChild(chip(engine.cell(sw.label, i).v)); });
-      r2.appendChild(el("span", "leg-dates", a.cb.idxs.map(function (i) { return fmt(data.dates[i].iso, data.dates[i].dow); }).join(" · ")));
-      ex.appendChild(r1); ex.appendChild(el("div", "swap-arrow", "⇅")); ex.appendChild(r2);
+      ex.appendChild(legRow(null, "They take", a.rb.idxs, state.person));
+      var rt1 = restTravel(a.rb); if (rt1) ex.appendChild(el("div", "rest-travel", rt1));
+      ex.appendChild(el("div", "swap-arrow", "⇅"));
+      ex.appendChild(legRow(null, "You take", a.cb.idxs, sw.label));
+      var rt2 = restTravel(a.cb); if (rt2) ex.appendChild(el("div", "rest-travel", rt2));
       ex.appendChild(el("div", "equity", "Rest match: " + a.rb.offBefore + "/" + a.rb.offAfter + " vs " + a.cb.offBefore + "/" + a.cb.offAfter + " off before/after"));
       c.appendChild(ex);
     });
@@ -390,7 +654,38 @@
       sw.warnings.forEach(function (m) { w.appendChild(el("div", "warn", "⚠ " + m)); });
       c.appendChild(w);
     } else {
-      c.appendChild(el("div", "clean", "✓ No rest-day or night-limit issues for either of you"));
+      c.appendChild(el("div", "clean", "✓ Like-for-like with matching rest days — no night-limit issues for either of you"));
+    }
+    return c;
+  }
+
+  function chainCard(ch, top) {
+    var c = el("div", "card swap chain" + (top ? " top" : ""));
+    if (top) c.appendChild(el("div", "ribbon", "Best option"));
+    var head = el("div", "swap-head");
+    head.appendChild(el("span", "slot", "3-way: you + Slot " + ch.C.label + " + Slot " + ch.D.label));
+    c.appendChild(head);
+
+    var ex = el("div", "exchange");
+    // C takes your block
+    ex.appendChild(legRow(null, "Slot " + ch.C.label + " takes", ch.rb.idxs, state.person));
+    var rtA = restTravel(ch.rb); if (rtA) ex.appendChild(el("div", "rest-travel", rtA));
+    ex.appendChild(el("div", "swap-arrow", "↻"));
+    // D takes C's block
+    ex.appendChild(legRow(null, "Slot " + ch.D.label + " takes", ch.cb.idxs, ch.C.label));
+    var rtB = restTravel(ch.cb); if (rtB) ex.appendChild(el("div", "rest-travel", rtB));
+    ex.appendChild(el("div", "swap-arrow", "↻"));
+    // you take D's block
+    ex.appendChild(legRow(null, "You take", ch.db.idxs, ch.D.label));
+    var rtC = restTravel(ch.db); if (rtC) ex.appendChild(el("div", "rest-travel", rtC));
+    c.appendChild(ex);
+
+    if (ch.warnings.length) {
+      var w = el("div", "warns");
+      ch.warnings.forEach(function (m) { w.appendChild(el("div", "warn", "⚠ " + m)); });
+      c.appendChild(w);
+    } else {
+      c.appendChild(el("div", "clean", "✓ Loop closes cleanly — everyone keeps the same number of on-calls"));
     }
     return c;
   }
@@ -407,6 +702,7 @@
     return c;
   }
 
-  // footer meta
+  // footer meta + initial shared-prefs load
   $("#rota-range").textContent = fmt(data.dateStart) + " – " + fmt(data.dateEnd);
+  Store.loadAll().then(function (j) { allPrefs = j || {}; rebuildPrefsMap(); if (state.person) renderPrefs(); });
 })(typeof window !== "undefined" ? window : globalThis);

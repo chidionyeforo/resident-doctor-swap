@@ -121,6 +121,16 @@
     border:1px solid var(--amber-line);border-radius:8px;padding:7px 9px}
   .clean{font-size:.8rem;color:var(--ok);background:var(--ok-bg);border-radius:8px;
     padding:7px 9px;margin-top:11px}
+  .rest-travel{font-size:.74rem;color:var(--teal-dark);margin:5px 0 0 74px;font-style:italic}
+  .chain .swap-arrow{color:var(--teal-dark)}
+  .chain .slot{font-size:.98rem}
+  .prefstatus{font-size:.78rem;margin-top:9px;min-height:1em}
+  .prefstatus.ok{color:var(--ok)}
+  .prefstatus.local{color:var(--amber-ink)}
+  .prefstatus.saving{color:var(--muted)}
+  #pref-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:11px}
+  #pref-list .empty{font-size:.82rem}
+  #pref-msg{font-size:.78rem;color:var(--danger);min-height:1em;margin-top:6px}
   .cover .cover-note{font-size:.84rem;color:var(--muted);margin:4px 0 0}
   .note{background:var(--amber-bg);border-color:var(--amber-line)}
   .note p{margin:6px 0 0;font-size:.88rem;color:var(--amber-ink)}
@@ -155,6 +165,18 @@
     <label class="fld" for="person">Your rota slot</label>
     <select id="person"><option value="">Select your slot…</option></select>
     <div id="person-meta"></div>
+
+    <div id="prefs-wrap" class="hide" style="margin-top:16px;border-top:1px solid var(--line);padding-top:14px">
+      <label class="fld" for="pref-date">Dates you <strong>can’t</strong> take a swap onto (saved for the whole team)</label>
+      <p class="step-help" style="margin:-2px 0 9px">Flag days you’re away or can’t cover. Anyone running the swap shop will skip you on these dates, and they’ll pre-fill your own “can’t take in return” list.</p>
+      <div class="unavail-controls">
+        <input type="date" id="pref-date" />
+        <button class="ghost" id="pref-add" type="button">Add</button>
+      </div>
+      <div id="pref-msg"></div>
+      <div id="pref-list"></div>
+      <div id="pref-status" class="prefstatus"></div>
+    </div>
   </section>
 
   <section class="card hide" id="step2">
@@ -184,10 +206,13 @@
       <p>The tool looks for a clean two-way swap: someone takes your shift on the day you want off, and you take an equivalent shift of theirs on another day, so neither of you changes how many on-calls you do.</p>
       <ul>
         <li><strong>Like for like.</strong> Day swaps with Day, Ward with Ward, and Evening (E) with Evening. N1 and N2 are both nights, so they swap freely with each other.</li>
+        <li><strong>Rest days travel with the shift.</strong> A like-for-like swap carries the protected off days either side, so neither of you ends up with fewer rest days. If the rest envelopes don’t match, the swap is flagged.</li>
         <li><strong>Rest is protected.</strong> No one is offered a shift on an LTFT day, a black-outlined protected day, or a rest day straight after their own on-call block.</li>
-        <li><strong>Nights stay legal.</strong> A swap is never suggested if it would put either of you over four nights in a row.</li>
+        <li><strong>Your availability is respected.</strong> If someone has flagged a date as one they can’t take, they won’t be suggested for it.</li>
+        <li><strong>Nights stay legal.</strong> A swap is never suggested if it would put anyone over four nights in a row.</li>
         <li><strong>People only count when on the rota.</strong> Someone is only suggested if their rota has started (their cells are filled in) on the dates involved.</li>
-        <li><strong>Best match first.</strong> Swaps are ranked by how closely the days off before and after line up, and by having no rest-day warnings.</li>
+        <li><strong>Three-way as a last resort.</strong> If no single person can both take your shift and give you one back, the tool looks for a three-way loop where everyone still keeps the same number of on-calls.</li>
+        <li><strong>Best match first.</strong> Swaps are ranked by how closely the days off before and after line up, and by having no warnings.</li>
       </ul>
       <p>It’s a suggestion engine — the rota team still makes the final change. Always sanity-check before asking someone.</p>
     </div>
