@@ -36,20 +36,25 @@ export default async (request) => {
     if (!label || typeof label !== "string") {
       return new Response(JSON.stringify({ error: "missing label" }), { status: 400, headers: JSON_HEADERS });
     }
-    // sanitise: keep only an array of ISO date strings
-    const raw = (body.prefs && Array.isArray(body.prefs.unavail)) ? body.prefs.unavail : [];
-    const unavail = raw
-      .filter((s) => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s))
-      .slice(0, 400);
+    // sanitise: keep ISO date strings only, capped per list
+    function cleanIsoList(arr) {
+      if (!Array.isArray(arr)) return [];
+      return arr.filter((s) => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s)).slice(0, 400);
+    }
+    const unavail = cleanIsoList(body.prefs && body.prefs.unavail);
+    const wantedOff = cleanIsoList(body.prefs && body.prefs.wantedOff);
 
     const all = (await store.get(KEY, { type: "json" })) || {};
-    if (unavail.length) {
-      all[label] = { unavail, updated: new Date().toISOString().slice(0, 10) };
+    if (unavail.length || wantedOff.length) {
+      const entry = { updated: new Date().toISOString().slice(0, 10) };
+      if (unavail.length) entry.unavail = unavail;
+      if (wantedOff.length) entry.wantedOff = wantedOff;
+      all[label] = entry;
     } else {
-      delete all[label]; // empty list = clear this person's flags
+      delete all[label]; // both empty = clear this person entirely
     }
     await store.setJSON(KEY, all);
-    return new Response(JSON.stringify({ ok: true, label, count: unavail.length }), { status: 200, headers: JSON_HEADERS });
+    return new Response(JSON.stringify({ ok: true, label, unavailCount: unavail.length, wantedCount: wantedOff.length }), { status: 200, headers: JSON_HEADERS });
   }
 
   return new Response(JSON.stringify({ error: "method not allowed" }), { status: 405, headers: JSON_HEADERS });

@@ -2,223 +2,690 @@
 <html lang="en-GB">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5" />
+<meta name="theme-color" content="#0d4f56" />
 <title>Resident Doctor Swap</title>
-<meta name="description" content="Find the best person to swap an on-call shift with, using the master rota." />
+<meta name="description" content="Find the best person to swap an on-call shift with." />
+<link rel="preconnect" href="https://rsms.me/">
+<link rel="stylesheet" href="https://rsms.me/inter/inter.css">
 <style>
+  /* ---- design tokens -------------------------------------------------- */
   :root{
-    --bg:#eef1f0; --surface:#ffffff; --ink:#16242a; --muted:#5e6e73;
-    --line:#e2e7e5; --line-strong:#cdd6d3;
-    --teal:#0e7c7b; --teal-dark:#0a5f5e; --teal-tint:#dcefec;
-    --amber-bg:#fdf4e0; --amber-ink:#8a5a00; --amber-line:#ecd9ad;
-    --danger:#b23a48; --danger-bg:#fbecee;
-    --ok:#0a6b4f; --ok-bg:#e3f4ec;
-    --n-bg:#e7e9f5; --n-ink:#39477e;
-    --d-bg:#fbeed4; --d-ink:#8a5a00;
-    --w-bg:#d8efec; --w-ink:#0a5f5e;
-    --e-bg:#eee5f6; --e-ink:#67459a;
-    --mono:ui-monospace,"SF Mono",Menlo,Consolas,"Roboto Mono",monospace;
-    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,Helvetica,Arial,sans-serif;
-    --radius:14px; --shadow:0 1px 2px rgba(20,40,45,.06),0 6px 20px rgba(20,40,45,.05);
+    /* Palette: deep teal authority, warm coral accent, paper background.
+       Grounded in the clinical setting but warmer than typical NHS blue. */
+    --paper:#f4efe6;
+    --paper-warm:#ebe4d6;
+    --ink:#0f1d22;
+    --ink-soft:#3a4a4f;
+    --muted:#6a7a7e;
+    --line:#dcd4c4;
+    --line-soft:#e5dfd2;
+
+    --teal:#0d4f56;
+    --teal-dark:#093a40;
+    --teal-light:#1c6f78;
+    --teal-tint:#dde9ea;
+    --teal-wash:#eef4f4;
+
+    --coral:#d65a3a;
+    --coral-dark:#b34325;
+    --coral-tint:#fbe9e2;
+
+    --amber:#c98a2c;
+    --amber-tint:#f6e9c8;
+
+    --night-bg:#dee3f2; --night-ink:#2c3a6e;
+    --day-bg:#f4e0bc;  --day-ink:#7a4a08;
+    --ward-bg:#cfe5e2; --ward-ink:#0a4f4a;
+    --e-bg:#e3d5ec;    --e-ink:#5a3380;
+
+    --ok:#0d6a4a; --ok-bg:#daefe2;
+    --warn-bg:#fbecc7; --warn-ink:#8a5e0a; --warn-line:#e8d399;
+
+    /* Type */
+    --display:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+    --body:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+    --mono:'JetBrains Mono',ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+
+    --radius-lg:18px;
+    --radius:13px;
+    --radius-sm:8px;
+    --shadow-sm:0 1px 2px rgba(15,29,34,.06);
+    --shadow:0 2px 4px rgba(15,29,34,.05), 0 14px 28px -10px rgba(15,29,34,.12);
+    --shadow-lift:0 4px 8px rgba(15,29,34,.08), 0 20px 40px -12px rgba(15,29,34,.18);
   }
-  *{box-sizing:border-box}
-  html,body{margin:0}
-  body{background:var(--bg);color:var(--ink);font-family:var(--sans);
-    font-size:16px;line-height:1.5;-webkit-font-smoothing:antialiased;
-    padding-bottom:80px}
-  .wrap{max-width:600px;margin:0 auto;padding:0 18px}
+  @supports (font-variation-settings:normal){
+    :root{ --display:'Inter var',-apple-system,sans-serif; --body:'Inter var',sans-serif; }
+  }
 
-  header.top{padding:30px 0 14px}
-  .brandrow{display:flex;align-items:center;gap:11px}
-  .mark{width:34px;height:34px;border-radius:9px;background:var(--teal);
-    position:relative;flex:0 0 auto;box-shadow:var(--shadow)}
-  .mark::before,.mark::after{content:"";position:absolute;background:#fff;border-radius:2px}
-  .mark::before{width:14px;height:4px;left:10px;top:15px}
-  .mark::after{width:4px;height:14px;left:15px;top:10px}
-  h1{font-size:1.42rem;letter-spacing:-.02em;font-weight:700;margin:0;line-height:1.1}
-  .sub{color:var(--muted);font-size:.92rem;margin:7px 0 0}
-  .sub .rng{font-family:var(--mono);font-size:.82rem;color:var(--teal-dark)}
+  *,*::before,*::after{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0;
+    background:var(--paper);
+    color:var(--ink);
+    font-family:var(--body);
+    font-size:16px;
+    line-height:1.55;
+    font-feature-settings:'cv11','ss01','ss03';
+    -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
+    padding-bottom:80px;
+    min-height:100vh;
+  }
+  /* Subtle texture: a fine grid that suggests rota cells, very low contrast */
+  body::before{
+    content:"";
+    position:fixed;inset:0;
+    background-image:
+      linear-gradient(to right,rgba(13,79,86,0.025) 1px,transparent 1px),
+      linear-gradient(to bottom,rgba(13,79,86,0.025) 1px,transparent 1px);
+    background-size:24px 24px;
+    pointer-events:none;
+    z-index:0;
+  }
+  .wrap{max-width:640px;margin:0 auto;padding:0 18px;position:relative;z-index:1}
 
-  .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
-    box-shadow:var(--shadow);padding:18px;margin:14px 0}
-  .step-num{font-family:var(--mono);font-size:.72rem;letter-spacing:.14em;
-    text-transform:uppercase;color:var(--teal-dark);font-weight:600}
-  .step-h{font-size:1.06rem;font-weight:650;margin:3px 0 2px;letter-spacing:-.01em}
-  .step-help{color:var(--muted);font-size:.88rem;margin:0 0 13px}
+  /* ---- header --------------------------------------------------------- */
+  header.top{padding:34px 0 22px;display:flex;align-items:flex-start;justify-content:space-between;gap:14px}
+  .brandrow{display:flex;align-items:center;gap:13px;flex:1;min-width:0}
+  .mark{
+    width:42px;height:42px;flex:0 0 auto;
+    background:var(--teal);border-radius:10px;
+    display:flex;align-items:center;justify-content:center;
+    box-shadow:var(--shadow-sm);
+  }
+  .mark svg{width:22px;height:22px;display:block}
+  .brand-text{min-width:0}
+  h1{
+    font-family:var(--display);font-weight:700;
+    font-size:1.5rem;letter-spacing:-0.025em;margin:0;line-height:1.05;color:var(--ink);
+  }
+  .sub{color:var(--muted);font-size:.85rem;margin:5px 0 0;line-height:1.4}
+  .sub .rng{font-family:var(--mono);font-size:.78rem;color:var(--teal-dark);background:var(--teal-wash);
+    padding:1px 6px;border-radius:5px;font-weight:500}
 
-  label.fld{display:block;font-size:.82rem;color:var(--muted);margin:0 0 6px;font-weight:550}
-  select,input[type=date]{width:100%;font-family:var(--sans);font-size:1rem;color:var(--ink);
-    background:#fff;border:1.5px solid var(--line-strong);border-radius:10px;padding:12px 12px;appearance:none}
-  select:focus,input:focus,button:focus-visible{outline:2.5px solid var(--teal);outline-offset:2px}
+  button.help-btn{
+    flex:0 0 auto;
+    width:42px;height:42px;border-radius:10px;
+    border:1.5px solid var(--line);background:var(--paper);
+    color:var(--ink-soft);font-family:var(--display);font-weight:700;
+    font-size:1.05rem;cursor:pointer;
+    display:flex;align-items:center;justify-content:center;
+    transition:transform .15s,border-color .15s,background .15s;
+    box-shadow:var(--shadow-sm);
+  }
+  button.help-btn:hover{border-color:var(--teal);color:var(--teal);transform:translateY(-1px)}
 
-  #person-meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}
-  .tag{font-size:.74rem;font-family:var(--mono);background:#eef3f2;color:var(--teal-dark);
-    border:1px solid var(--line);border-radius:999px;padding:3px 9px;white-space:nowrap}
+  /* ---- cards --------------------------------------------------------- */
+  .card{
+    background:#fff;
+    border:1px solid var(--line);
+    border-radius:var(--radius-lg);
+    box-shadow:var(--shadow-sm);
+    padding:22px;
+    margin:14px 0;
+    transition:box-shadow .2s,border-color .2s;
+  }
+  .card.active{border-color:var(--teal-tint);box-shadow:var(--shadow)}
+  .step-num{
+    font-family:var(--mono);font-size:.7rem;letter-spacing:.16em;text-transform:uppercase;
+    color:var(--coral-dark);font-weight:600;
+  }
+  .step-h{
+    font-family:var(--display);font-size:1.18rem;font-weight:700;
+    letter-spacing:-0.02em;margin:6px 0 4px;line-height:1.2;color:var(--ink);
+  }
+  .step-help{color:var(--muted);font-size:.88rem;margin:0 0 16px;line-height:1.45}
 
-  .chip{display:inline-flex;align-items:center;font-family:var(--mono);font-weight:650;
-    font-size:.72rem;letter-spacing:.03em;padding:3px 7px;border-radius:6px;line-height:1}
-  .chip-NIGHT{background:var(--n-bg);color:var(--n-ink)}
-  .chip-DAY{background:var(--d-bg);color:var(--d-ink)}
-  .chip-WARD{background:var(--w-bg);color:var(--w-ink)}
-  .chip-E{background:var(--e-bg);color:var(--e-ink)}
+  /* ---- form controls -------------------------------------------------- */
+  label.fld{
+    display:block;font-family:var(--mono);font-size:.7rem;
+    letter-spacing:.12em;text-transform:uppercase;
+    color:var(--muted);margin:0 0 7px;font-weight:600;
+  }
+  select,input[type=date],input[type=email],input[type=text]{
+    width:100%;font-family:var(--body);font-size:1rem;color:var(--ink);
+    background:#fff;border:1.5px solid var(--line);border-radius:var(--radius-sm);
+    padding:13px 14px;appearance:none;
+    transition:border-color .15s,box-shadow .15s;
+  }
+  select:focus,input:focus,textarea:focus,button:focus-visible{
+    outline:none;border-color:var(--teal);box-shadow:0 0 0 4px var(--teal-tint);
+  }
+  textarea{
+    width:100%;font-family:var(--mono);font-size:.85rem;line-height:1.55;
+    color:var(--ink);background:#fff;border:1.5px solid var(--line);
+    border-radius:var(--radius-sm);padding:12px;resize:vertical;min-height:240px;
+  }
+  select{
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'><path d='M1 1.5 6 6.5 11 1.5' stroke='%230d4f56' stroke-width='2' fill='none' stroke-linecap='round'/></svg>");
+    background-repeat:no-repeat;background-position:right 14px center;background-size:12px;padding-right:38px;
+  }
+  input[type=date]{font-family:var(--mono);font-size:.95rem}
 
-  .shift-row{display:flex;align-items:center;gap:12px;justify-content:space-between;
-    border:1.5px solid var(--line);border-radius:12px;padding:11px 12px;margin:8px 0;
-    transition:border-color .15s,background .15s}
-  .shift-row.selected{border-color:var(--teal);background:var(--teal-tint)}
-  .shift-main{min-width:0}
-  .shift-dates{display:flex;flex-wrap:wrap;gap:6px 10px}
-  .shift-day{display:flex;align-items:center;gap:6px}
-  .shift-date{font-size:.84rem;color:var(--ink)}
-  .rest{font-size:.74rem;color:var(--muted);margin-top:6px}
-  button.pick{flex:0 0 auto;font-size:.82rem;font-weight:600;border:1.5px solid var(--teal);
-    color:var(--teal-dark);background:#fff;border-radius:999px;padding:8px 13px;cursor:pointer}
-  .shift-row.selected button.pick{background:var(--teal);color:#fff;border-color:var(--teal)}
+  #person-meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:13px}
+  .tag{
+    font-family:var(--mono);font-size:.7rem;letter-spacing:.04em;
+    background:var(--teal-wash);color:var(--teal-dark);
+    border:1px solid var(--teal-tint);border-radius:5px;padding:3px 8px;
+    white-space:nowrap;font-weight:500;
+  }
+
+  /* ---- shift chips (the visual signature) ---------------------------- */
+  .chip{
+    display:inline-flex;align-items:center;font-family:var(--mono);font-weight:700;
+    font-size:.7rem;letter-spacing:.04em;padding:3px 8px;border-radius:5px;line-height:1.2;
+    border:1px solid transparent;
+  }
+  .chip-NIGHT{background:var(--night-bg);color:var(--night-ink);border-color:#c5cce4}
+  .chip-DAY{background:var(--day-bg);color:var(--day-ink);border-color:#e9cf9b}
+  .chip-WARD{background:var(--ward-bg);color:var(--ward-ink);border-color:#a9d0cb}
+  .chip-E{background:var(--e-bg);color:var(--e-ink);border-color:#cbb8da}
+
+  /* ---- shift rows (your own shifts) ---------------------------------- */
+  #shifts{margin-top:4px}
+  .shift-row{
+    display:flex;gap:14px;align-items:flex-start;justify-content:space-between;
+    border:1.5px solid var(--line);border-radius:var(--radius);padding:14px;margin:10px 0;
+    transition:border-color .15s,background .15s,transform .12s;
+    background:#fff;
+  }
+  .shift-row.selected{
+    border-color:var(--coral);
+    background:var(--coral-tint);
+  }
+  .shift-row.selected .shift-rest{color:var(--coral-dark)}
+  .shift-main{min-width:0;flex:1}
+  .shift-toplabel{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+  .shift-cls-label{font-family:var(--mono);font-size:.72rem;letter-spacing:.04em;color:var(--muted)}
+  .shift-dates{display:flex;flex-wrap:wrap;gap:6px}
+  .shift-pill{
+    display:inline-flex;align-items:center;gap:5px;
+    background:var(--paper);border:1px solid var(--line-soft);border-radius:6px;
+    padding:5px 9px;
+  }
+  .shift-row.selected .shift-pill{background:#fff;border-color:#f0c5b3}
+  .shift-dow{font-family:var(--mono);font-size:.7rem;color:var(--muted);font-weight:600}
+  .shift-date{font-size:.86rem;font-weight:500}
+  .shift-rest{font-size:.74rem;color:var(--muted);margin-top:10px;
+    font-family:var(--mono);letter-spacing:.02em}
+
+  button.pick{
+    flex:0 0 auto;
+    font-family:var(--display);font-size:.83rem;font-weight:600;
+    border:1.5px solid var(--ink);
+    color:var(--ink);background:#fff;border-radius:999px;
+    padding:9px 16px;cursor:pointer;
+    transition:background .15s,color .15s,border-color .15s,transform .1s;
+    white-space:nowrap;
+  }
+  button.pick:hover{background:var(--ink);color:#fff}
+  .shift-row.selected button.pick{background:var(--coral);color:#fff;border-color:var(--coral)}
+  .shift-row.selected button.pick:hover{background:var(--coral-dark);border-color:var(--coral-dark)}
+
+  /* ---- unavailability panel (single, merged) ------------------------- */
+  .unavail-section{margin-top:8px}
+  .unavail-row{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap}
+  .unavail-row .col{flex:1;min-width:120px}
+  .unavail-row label.fld{margin-bottom:5px}
+  button.btn-ghost{
+    font-family:var(--display);font-weight:600;font-size:.88rem;
+    border:1.5px solid var(--line);background:#fff;color:var(--ink);
+    border-radius:var(--radius-sm);padding:11px 16px;cursor:pointer;
+    transition:border-color .15s,background .15s,color .15s;
+    white-space:nowrap;
+  }
+  button.btn-ghost:hover{border-color:var(--teal);color:var(--teal-dark);background:var(--teal-wash)}
+
+  #unavail-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:14px;min-height:30px}
+  #unavail-list .subtle{color:var(--muted);font-size:.83rem;margin:5px 0 0;font-style:italic}
+  .range-pill{
+    display:inline-flex;align-items:center;gap:7px;
+    background:#fff;border:1.5px solid var(--teal-tint);border-radius:7px;
+    padding:5px 5px 5px 11px;
+    font-size:.83rem;font-weight:500;color:var(--teal-dark);
+  }
+  .range-x{
+    border:none;background:var(--teal-tint);color:var(--teal-dark);
+    width:20px;height:20px;border-radius:4px;cursor:pointer;
+    display:flex;align-items:center;justify-content:center;font-size:.7rem;line-height:1;
+    transition:background .12s;font-weight:700;
+  }
+  .range-x:hover{background:var(--coral);color:#fff}
+
+  .savestatus{font-family:var(--mono);font-size:.72rem;margin-top:11px;min-height:1em;letter-spacing:.03em}
+  .savestatus.ok{color:var(--ok)}
+  .savestatus.local{color:var(--warn-ink)}
+  .savestatus.saving{color:var(--muted)}
+  #unavail-msg{font-size:.78rem;color:var(--coral-dark);min-height:1em;margin-top:6px}
+
+  /* ---- primary CTA --------------------------------------------------- */
+  button.primary{
+    position:relative;
+    display:inline-flex;align-items:center;justify-content:center;gap:9px;
+    width:100%;
+    font-family:var(--display);font-size:1.02rem;font-weight:600;
+    color:#fff;background:var(--teal);
+    border:none;border-radius:var(--radius);padding:17px 18px;cursor:pointer;
+    box-shadow:0 4px 12px -2px rgba(13,79,86,.4), inset 0 1px 0 rgba(255,255,255,.12);
+    margin-top:8px;
+    transition:transform .12s,background .15s,box-shadow .2s;
+    letter-spacing:-.005em;
+  }
+  button.primary:hover{
+    background:var(--teal-dark);
+    transform:translateY(-1px);
+    box-shadow:0 6px 18px -2px rgba(13,79,86,.45), inset 0 1px 0 rgba(255,255,255,.12);
+  }
+  button.primary:active{transform:translateY(0)}
+  button.primary:disabled{opacity:.6;cursor:wait;transform:none}
+  .btn-arrow{display:inline-block;transition:transform .15s}
+  button.primary:hover .btn-arrow{transform:translateX(2px)}
+
+  /* ---- results --------------------------------------------------------- */
+  .res-h{
+    font-family:var(--mono);font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--coral-dark);margin:28px 4px 8px;font-weight:600;
+  }
+  .summary{background:var(--ink);color:#fff;border-color:var(--ink)}
+  .summary .kicker{
+    font-family:var(--mono);font-size:.7rem;letter-spacing:.16em;
+    text-transform:uppercase;color:var(--coral);font-weight:600;margin-bottom:10px;
+  }
+  .sum-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:6px 0}
+  .sum-dates{font-size:.92rem;color:#e8e3d8}
+
+  .swap{position:relative}
+  .swap.top{
+    border-color:var(--teal);
+    box-shadow:0 0 0 3px var(--teal-tint),var(--shadow);
+  }
+  .ribbon{
+    position:absolute;top:-12px;right:18px;
+    background:var(--teal);color:#fff;
+    font-family:var(--mono);font-size:.65rem;letter-spacing:.1em;text-transform:uppercase;
+    padding:4px 11px;border-radius:5px;font-weight:600;
+    box-shadow:0 4px 10px -2px rgba(13,79,86,.4);
+  }
+  .swap-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:6px}
+  .slot{
+    font-family:var(--display);font-weight:700;font-size:1.12rem;
+    letter-spacing:-.015em;color:var(--ink);
+  }
+  .exchange{
+    border:1px dashed var(--teal-tint);border-radius:var(--radius);
+    padding:14px;margin-top:14px;background:var(--teal-wash);
+    position:relative;
+  }
+  .leg{display:flex;align-items:flex-start;gap:10px}
+  .leg-label{
+    font-family:var(--mono);font-size:.65rem;letter-spacing:.08em;text-transform:uppercase;
+    color:var(--muted);width:78px;flex:0 0 auto;padding-top:4px;font-weight:600;
+  }
+  .leg-content{display:flex;flex-wrap:wrap;gap:7px;align-items:center;flex:1;min-width:0}
+  .leg-dates{font-size:.86rem;line-height:1.4}
+  .swap-arrow{
+    font-size:1.5rem;color:var(--teal);text-align:center;
+    margin:6px 0 6px 78px;line-height:1;font-weight:400;
+  }
+  .chain-arrow{color:var(--coral)}
+  .rest-travel{
+    font-family:var(--mono);font-size:.7rem;color:var(--teal-dark);
+    margin:6px 0 0 88px;letter-spacing:.02em;
+  }
+  .warns{margin-top:14px;display:flex;flex-direction:column;gap:6px}
+  .warn{
+    font-size:.81rem;background:var(--warn-bg);color:var(--warn-ink);
+    border:1px solid var(--warn-line);border-radius:var(--radius-sm);padding:8px 11px;
+  }
+  .clean{
+    font-family:var(--mono);font-size:.74rem;color:var(--ok);
+    background:var(--ok-bg);border-radius:var(--radius-sm);
+    padding:8px 11px;margin-top:14px;letter-spacing:.02em;
+  }
+  .cover .cover-note{font-size:.85rem;color:var(--muted);margin:4px 0 0}
+  .note{background:var(--coral-tint);border-color:#f0c5b3}
+  .note p{margin:6px 0 0;font-size:.88rem;color:var(--coral-dark)}
+  .note strong{color:var(--coral-dark)}
 
   .empty{color:var(--muted);font-size:.9rem;font-style:italic;margin:6px 0 0}
 
-  .unavail-controls{display:flex;gap:8px}
-  .unavail-controls input{flex:1}
-  button.ghost{font-size:.85rem;font-weight:600;border:1.5px solid var(--line-strong);
-    background:#fff;color:var(--ink);border-radius:10px;padding:0 14px;cursor:pointer}
-  #unavail-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:11px}
-  .pill{font-size:.78rem;background:#f2f5f4;border:1px solid var(--line);border-radius:999px;
-    padding:4px 6px 4px 11px;display:inline-flex;align-items:center;gap:4px}
-  .pill-x{border:none;background:none;font-size:1rem;line-height:1;color:var(--muted);
-    cursor:pointer;padding:0 4px}
-  #unavail-msg{font-size:.78rem;color:var(--danger);min-height:1em;margin-top:6px}
+  /* ---- mutual banner & looking flags --------------------------------- */
+  .mutual-banner{
+    background:linear-gradient(135deg,var(--coral-tint) 0%, #fde8c8 100%);
+    border:1.5px solid var(--coral);
+    box-shadow:0 4px 16px -4px rgba(214,90,58,.25);
+    padding:20px 22px;
+  }
+  .banner-kicker{
+    font-family:var(--mono);font-size:.7rem;letter-spacing:.16em;text-transform:uppercase;
+    color:var(--coral-dark);font-weight:700;margin-bottom:5px;
+  }
+  .banner-title{
+    font-family:var(--display);font-size:1.05rem;font-weight:700;
+    color:var(--ink);letter-spacing:-.015em;line-height:1.3;
+  }
+  .banner-list{display:flex;flex-direction:column;gap:8px;margin-top:14px}
+  .banner-row{
+    display:flex;align-items:center;justify-content:space-between;gap:12px;
+    background:#fff;border:1.5px solid #f0c5b3;border-radius:var(--radius);
+    padding:11px 14px;text-align:left;cursor:pointer;
+    transition:transform .12s,border-color .15s,box-shadow .15s;
+    font-family:var(--body);width:100%;
+  }
+  .banner-row:hover{border-color:var(--coral);transform:translateX(2px);box-shadow:var(--shadow-sm)}
+  .banner-row.strong{border-color:var(--coral);background:#fff8f5}
+  .banner-row-main{flex:1;min-width:0}
+  .banner-row-label{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:5px}
+  .banner-row-label strong{font-family:var(--display);font-size:1rem;font-weight:700;color:var(--ink)}
+  .banner-row-meta{font-family:var(--mono);font-size:.72rem;color:var(--muted);letter-spacing:.04em}
+  .banner-row-dates{display:flex;flex-wrap:wrap;gap:6px}
+  .banner-date{
+    display:inline-flex;align-items:center;gap:5px;font-size:.83rem;color:var(--ink-soft);
+  }
+  .banner-row-cta{
+    font-family:var(--display);font-size:.83rem;font-weight:600;
+    color:var(--coral-dark);white-space:nowrap;flex:0 0 auto;
+  }
+  .mutual-pill{
+    font-family:var(--mono);font-size:.65rem;letter-spacing:.06em;text-transform:uppercase;
+    background:var(--coral);color:#fff;padding:2px 8px;border-radius:4px;font-weight:600;
+  }
+  .mutual-pill.strong{background:var(--coral)}
 
-  button.primary{display:inline-flex;align-items:center;justify-content:center;gap:8px;
-    width:100%;font-size:1rem;font-weight:650;color:#fff;background:var(--teal);
-    border:none;border-radius:12px;padding:15px;cursor:pointer;box-shadow:var(--shadow);
-    margin-top:6px}
-  button.primary:hover{background:var(--teal-dark)}
+  /* "Looking" flag on user's own shifts */
+  .looking-flag{
+    font-family:var(--mono);font-size:.62rem;letter-spacing:.1em;text-transform:uppercase;
+    background:var(--coral);color:#fff;padding:2px 7px;border-radius:4px;font-weight:600;
+    margin-left:2px;
+  }
+  .shift-row.advertised{border-color:var(--coral-tint);background:#fffaf6}
 
-  .res-h{font-size:.78rem;font-family:var(--mono);letter-spacing:.1em;text-transform:uppercase;
-    color:var(--muted);margin:22px 2px 6px;font-weight:600}
-  .summary .kicker{font-size:.74rem;font-family:var(--mono);letter-spacing:.12em;
-    text-transform:uppercase;color:var(--teal-dark);font-weight:600;margin-bottom:8px}
-  .sum-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:5px 0}
-  .sum-dates{font-size:.86rem;color:var(--ink)}
+  /* Looking status strip above shifts */
+  #looking-status{margin-bottom:14px}
+  .looking-status-line{
+    display:flex;align-items:center;gap:10px;
+    background:#fff8f5;border:1px solid #f0c5b3;border-radius:var(--radius);
+    padding:10px 14px;font-size:.86rem;color:var(--coral-dark);flex-wrap:wrap;
+  }
+  .looking-dot{
+    width:8px;height:8px;border-radius:50%;background:var(--coral);flex:0 0 auto;
+    box-shadow:0 0 0 3px var(--coral-tint);
+    animation:pulse 2s ease-in-out infinite;
+  }
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+  .looking-text{flex:1;min-width:0}
+  .looking-clear{
+    font-family:var(--display);font-weight:600;font-size:.78rem;
+    border:1.5px solid var(--coral);background:#fff;color:var(--coral-dark);
+    border-radius:6px;padding:5px 11px;cursor:pointer;
+    transition:background .12s,color .12s;
+  }
+  .looking-clear:hover{background:var(--coral);color:#fff}
 
-  .swap{position:relative;border:1.5px solid var(--line)}
-  .swap.top{border-color:var(--teal);box-shadow:0 0 0 3px var(--teal-tint),var(--shadow)}
-  .ribbon{position:absolute;top:-10px;right:14px;background:var(--teal);color:#fff;
-    font-size:.68rem;font-family:var(--mono);letter-spacing:.08em;text-transform:uppercase;
-    padding:3px 9px;border-radius:999px;font-weight:600}
-  .swap-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:4px}
-  .slot{font-weight:700;font-size:1.05rem;letter-spacing:-.01em}
-  .exchange{border:1px solid var(--line);border-radius:11px;padding:11px;margin-top:11px;
-    background:#fbfcfc}
-  .leg{display:flex;flex-wrap:wrap;align-items:center;gap:7px}
-  .leg-label{font-size:.72rem;font-family:var(--mono);text-transform:uppercase;letter-spacing:.06em;
-    color:var(--muted);width:74px;flex:0 0 auto}
-  .leg-dates{font-size:.84rem}
-  .swap-arrow{font-size:1.1rem;color:var(--teal);text-align:center;margin:4px 0 4px 74px;line-height:1}
-  .equity{font-size:.74rem;color:var(--muted);margin-top:8px;padding-top:8px;border-top:1px dashed var(--line)}
-  .warns{margin-top:11px;display:flex;flex-direction:column;gap:5px}
-  .warn{font-size:.8rem;background:var(--amber-bg);color:var(--amber-ink);
-    border:1px solid var(--amber-line);border-radius:8px;padding:7px 9px}
-  .clean{font-size:.8rem;color:var(--ok);background:var(--ok-bg);border-radius:8px;
-    padding:7px 9px;margin-top:11px}
-  .rest-travel{font-size:.74rem;color:var(--teal-dark);margin:5px 0 0 74px;font-style:italic}
-  .chain .swap-arrow{color:var(--teal-dark)}
-  .chain .slot{font-size:.98rem}
-  .prefstatus{font-size:.78rem;margin-top:9px;min-height:1em}
-  .prefstatus.ok{color:var(--ok)}
-  .prefstatus.local{color:var(--amber-ink)}
-  .prefstatus.saving{color:var(--muted)}
-  #pref-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:11px}
-  #pref-list .empty{font-size:.82rem}
-  #pref-msg{font-size:.78rem;color:var(--danger);min-height:1em;margin-top:6px}
-  .cover .cover-note{font-size:.84rem;color:var(--muted);margin:4px 0 0}
-  .note{background:var(--amber-bg);border-color:var(--amber-line)}
-  .note p{margin:6px 0 0;font-size:.88rem;color:var(--amber-ink)}
+  /* Mutual swap card styling */
+  .swap.mutual-strong{
+    border-color:var(--coral);
+    box-shadow:0 0 0 3px var(--coral-tint),0 4px 12px -4px rgba(214,90,58,.25);
+  }
+  .swap.mutual-soft{border-color:#f0c5b3}
+  .ribbon.mutual{background:var(--coral);box-shadow:0 4px 10px -2px rgba(214,90,58,.4)}
+  .ribbon.mutual-soft{background:#fff;color:var(--coral-dark);border:1.5px solid var(--coral)}
+  .res-h.mutual-h{color:var(--coral-dark)}
 
-  details.why{margin:18px 0 8px}
-  details.why summary{cursor:pointer;font-size:.84rem;color:var(--muted);font-weight:550}
+  /* ---- card actions / email buttons --------------------------------- */
+  .card-foot{
+    margin-top:16px;padding-top:14px;border-top:1px solid var(--line-soft);
+  }
+  .card-actions{display:flex;gap:8px;flex-wrap:wrap}
+  button.btn-solid{
+    font-family:var(--display);font-weight:600;font-size:.85rem;
+    background:var(--teal);color:#fff;border:1.5px solid var(--teal);
+    border-radius:var(--radius-sm);padding:9px 14px;cursor:pointer;
+    transition:background .15s,border-color .15s,transform .1s;
+  }
+  button.btn-solid:hover{background:var(--teal-dark);border-color:var(--teal-dark)}
+  .card-actions button{flex:1;min-width:140px}
+
+  details.why{margin:22px 0 8px}
+  details.why summary{
+    cursor:pointer;font-family:var(--mono);font-size:.74rem;letter-spacing:.06em;
+    color:var(--muted);font-weight:500;list-style:none;padding:8px 0;
+  }
+  details.why summary::-webkit-details-marker{display:none}
+  details.why summary::before{content:"▸ ";color:var(--coral)}
+  details.why[open] summary::before{content:"▾ "}
   details.why ul{margin:10px 0 0;padding-left:18px}
-  details.why li{font-size:.82rem;color:var(--muted);margin:4px 0}
-  details.about{margin-top:14px}
-  details.about summary{cursor:pointer;font-size:.85rem;color:var(--teal-dark);font-weight:600}
-  details.about .body{font-size:.86rem;color:var(--muted);margin-top:10px}
-  details.about li{margin:5px 0}
+  details.why li{font-size:.81rem;color:var(--ink-soft);margin:5px 0;line-height:1.4}
 
-  footer{color:var(--muted);font-size:.78rem;text-align:center;padding:30px 0 10px}
-  .hide{display:none}
-  @media (prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto!important}}
+  /* ---- modals (help + email) ---------------------------------------- */
+  .modal{
+    position:fixed;inset:0;background:rgba(15,29,34,.6);
+    display:none;align-items:flex-start;justify-content:center;
+    z-index:100;padding:30px 14px 30px;overflow-y:auto;
+    backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);
+  }
+  .modal.open{display:flex}
+  .modal-card{
+    background:#fff;border-radius:var(--radius-lg);
+    max-width:560px;width:100%;padding:26px 24px;
+    box-shadow:var(--shadow-lift);
+    position:relative;
+    border:1px solid var(--line);
+  }
+  .modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:18px}
+  .modal-title{
+    font-family:var(--display);font-weight:700;font-size:1.25rem;
+    letter-spacing:-.02em;margin:0;color:var(--ink);line-height:1.15;
+  }
+  .modal-eyebrow{
+    font-family:var(--mono);font-size:.7rem;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--coral-dark);font-weight:600;margin-bottom:4px;
+  }
+  button.modal-close{
+    flex:0 0 auto;
+    width:32px;height:32px;border-radius:8px;
+    border:1.5px solid var(--line);background:#fff;color:var(--ink-soft);
+    cursor:pointer;font-size:1rem;line-height:1;
+    display:flex;align-items:center;justify-content:center;
+    transition:background .12s,color .12s,border-color .12s;
+  }
+  button.modal-close:hover{background:var(--ink);color:#fff;border-color:var(--ink)}
+
+  .help-body{font-size:.93rem;line-height:1.55;color:var(--ink-soft)}
+  .help-body h3{
+    font-family:var(--display);font-weight:700;font-size:.95rem;
+    letter-spacing:-.005em;color:var(--ink);margin:18px 0 6px;
+  }
+  .help-body p{margin:6px 0 12px}
+  .help-body .callout{
+    background:var(--coral-tint);border-left:3px solid var(--coral);
+    padding:11px 14px;border-radius:var(--radius-sm);font-size:.88rem;
+    color:var(--coral-dark);margin:14px 0;
+  }
+  .help-body .callout strong{color:var(--coral-dark)}
+
+  /* email modal */
+  .email-fields{display:flex;flex-direction:column;gap:14px}
+  .email-fields label.fld{margin:0 0 5px}
+  .modal-actions{
+    display:flex;gap:8px;margin-top:18px;justify-content:flex-end;flex-wrap:wrap;
+  }
+  .modal-actions button{font-family:var(--display);font-weight:600;font-size:.88rem;
+    border-radius:var(--radius-sm);padding:11px 17px;cursor:pointer;
+    transition:background .15s,transform .1s,border-color .15s;
+  }
+  .modal-actions .btn-cancel{
+    background:#fff;color:var(--ink-soft);border:1.5px solid var(--line);
+  }
+  .modal-actions .btn-cancel:hover{border-color:var(--ink-soft)}
+  .modal-actions .btn-primary{
+    background:var(--coral);color:#fff;border:1.5px solid var(--coral);
+    box-shadow:0 4px 10px -2px rgba(214,90,58,.4);
+  }
+  .modal-actions .btn-primary:hover{background:var(--coral-dark);border-color:var(--coral-dark)}
+  .modal-actions .btn-secondary{
+    background:#fff;color:var(--teal-dark);border:1.5px solid var(--teal);
+  }
+  .modal-actions .btn-secondary:hover{background:var(--teal-wash)}
+
+  footer{
+    color:var(--muted);font-size:.78rem;text-align:center;
+    padding:34px 0 16px;font-family:var(--mono);letter-spacing:.04em;
+  }
+
+  .hide{display:none !important}
+
+  @media (max-width:480px){
+    h1{font-size:1.32rem}
+    .card{padding:18px 16px}
+    .modal-card{padding:22px 18px}
+    .leg-label{width:64px;font-size:.6rem}
+    .swap-arrow{margin-left:64px}
+    .rest-travel{margin-left:74px}
+    .card-actions button{flex:1 1 100%}
+  }
+  @media (prefers-reduced-motion:reduce){
+    *{transition:none !important;animation:none !important;scroll-behavior:auto !important}
+  }
 </style>
 </head>
 <body>
 <div class="wrap">
   <header class="top">
-    <div class="brandrow"><div class="mark" aria-hidden="true"></div>
-      <h1>Resident Doctor Swap</h1></div>
-    <p class="sub">Find the best person to ask for an on-call swap, straight from the master rota.
-      Covering <span class="rng" id="rota-range"></span>.</p>
+    <div class="brandrow">
+      <div class="mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#f4efe6" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M5 8h13M14 4l4 4-4 4"/>
+          <path d="M19 16H6M10 12l-4 4 4 4"/>
+        </svg>
+      </div>
+      <div class="brand-text">
+        <h1>Resident Doctor Swap</h1>
+        <p class="sub">Rota period <span class="rng" id="rota-range"></span></p>
+      </div>
+    </div>
+    <button id="help-open" class="help-btn" aria-label="Help">?</button>
   </header>
 
-  <section class="card" id="step1">
+  <section class="card" id="person-card">
     <div class="step-num">Step 1</div>
     <div class="step-h">Who are you?</div>
-    <p class="step-help">Pick your slot on the rota. Slots with an a/b share one line but start at different times of the year.</p>
+    <p class="step-help">Pick your slot. Slots with an a/b share one rota line but cover different parts of the year.</p>
     <label class="fld" for="person">Your rota slot</label>
-    <select id="person"><option value="">Select your slot…</option></select>
+    <select id="person" aria-label="Your rota slot">
+      <option value="">Select your slot…</option>
+    </select>
     <div id="person-meta"></div>
-
-    <div id="prefs-wrap" class="hide" style="margin-top:16px;border-top:1px solid var(--line);padding-top:14px">
-      <label class="fld" for="pref-date">Dates you <strong>can’t</strong> take a swap onto (saved for the whole team)</label>
-      <p class="step-help" style="margin:-2px 0 9px">Flag days you’re away or can’t cover. Anyone running the swap shop will skip you on these dates, and they’ll pre-fill your own “can’t take in return” list.</p>
-      <div class="unavail-controls">
-        <input type="date" id="pref-date" />
-        <button class="ghost" id="pref-add" type="button">Add</button>
-      </div>
-      <div id="pref-msg"></div>
-      <div id="pref-list"></div>
-      <div id="pref-status" class="prefstatus"></div>
-    </div>
   </section>
+
+  <section id="mutual-banner" class="card mutual-banner hide" aria-live="polite"></section>
 
   <section class="card hide" id="step2">
     <div class="step-num">Step 2</div>
-    <div class="step-h">Which shift do you want off?</div>
-    <p class="step-help">These are your swappable on-call shifts. Tap the one you want covered. Night blocks swap as a whole.</p>
+    <div class="step-h">Which shifts do you want off?</div>
+    <p class="step-help">These are your swappable on-call shifts. Tap any to mark for swap. Night blocks swap as a whole.</p>
+    <div id="looking-status" class="hide"></div>
     <div id="shifts"></div>
+  </section>
 
-    <div id="unavail-wrap" class="hide" style="margin-top:16px">
-      <label class="fld" for="unavail-date">Optional — dates you can’t take a shift in return</label>
-      <div class="unavail-controls">
-        <input type="date" id="unavail-date" />
-        <button class="ghost" id="unavail-add" type="button">Add</button>
+  <section class="card hide" id="step3">
+    <div class="step-num">Step 3</div>
+    <div class="step-h">When can’t you take a swap?</div>
+    <p class="step-help">Flag dates you can’t cover — single days or ranges. These are saved for everyone, so colleagues running the swap shop won’t suggest you on those days either. You can edit this list any time.</p>
+
+    <div class="unavail-section">
+      <div class="unavail-row">
+        <div class="col">
+          <label class="fld" for="unavail-from">From</label>
+          <input type="date" id="unavail-from" />
+        </div>
+        <div class="col">
+          <label class="fld" for="unavail-to">To (optional)</label>
+          <input type="date" id="unavail-to" />
+        </div>
+        <button class="btn-ghost" id="unavail-add" type="button">Add range</button>
       </div>
       <div id="unavail-msg"></div>
       <div id="unavail-list"></div>
+      <div id="unavail-status" class="savestatus"></div>
     </div>
 
-    <button class="primary hide" id="find" type="button">Find the best swap ⇅</button>
+    <button class="primary hide" id="find" type="button">
+      <span class="btn-label">Find a swap</span>
+      <span class="btn-arrow" aria-hidden="true">→</span>
+    </button>
   </section>
 
   <section id="results"></section>
 
-  <details class="about">
-    <summary>How matches are chosen</summary>
-    <div class="body">
-      <p>The tool looks for a clean two-way swap: someone takes your shift on the day you want off, and you take an equivalent shift of theirs on another day, so neither of you changes how many on-calls you do.</p>
-      <ul>
-        <li><strong>Like for like.</strong> Day swaps with Day, Ward with Ward, and Evening (E) with Evening. N1 and N2 are both nights, so they swap freely with each other.</li>
-        <li><strong>Rest days travel with the shift.</strong> A like-for-like swap carries the protected off days either side, so neither of you ends up with fewer rest days. If the rest envelopes don’t match, the swap is flagged.</li>
-        <li><strong>Rest is protected.</strong> No one is offered a shift on an LTFT day, a black-outlined protected day, or a rest day straight after their own on-call block.</li>
-        <li><strong>Your availability is respected.</strong> If someone has flagged a date as one they can’t take, they won’t be suggested for it.</li>
-        <li><strong>Nights stay legal.</strong> A swap is never suggested if it would put anyone over four nights in a row.</li>
-        <li><strong>People only count when on the rota.</strong> Someone is only suggested if their rota has started (their cells are filled in) on the dates involved.</li>
-        <li><strong>Three-way as a last resort.</strong> If no single person can both take your shift and give you one back, the tool looks for a three-way loop where everyone still keeps the same number of on-calls.</li>
-        <li><strong>Best match first.</strong> Swaps are ranked by how closely the days off before and after line up, and by having no warnings.</li>
-      </ul>
-      <p>It’s a suggestion engine — the rota team still makes the final change. Always sanity-check before asking someone.</p>
-    </div>
-  </details>
+  <footer>The rota team makes all swaps official. Always confirm.</footer>
+</div>
 
-  <footer>The rota is read-only here. Swaps are arranged with the rota team.</footer>
+<!-- HELP MODAL -->
+<div class="modal" id="help-modal" role="dialog" aria-labelledby="help-title" aria-modal="true">
+  <div class="modal-card">
+    <div class="modal-head">
+      <div>
+        <div class="modal-eyebrow">Help</div>
+        <h2 class="modal-title" id="help-title">How the swap shop works</h2>
+      </div>
+      <button class="modal-close" id="help-close" aria-label="Close">✕</button>
+    </div>
+    <div class="help-body">
+      <p>Pick your slot, choose the shifts you want off, and the swap shop suggests colleagues who can take them — ideally giving you an equivalent shift in return so the swap is fair.</p>
+
+      <h3>The basics</h3>
+      <p>Swaps are like-for-like (Day with Day, Night with Night, Ward with Ward, E with E), and the rest days either side travel with the shift so nobody loses out on rest.</p>
+      <p>If no direct two-way swap is possible, the shop will suggest a three-way swap as a last resort, where everyone still ends up doing the same number of on-calls.</p>
+
+      <h3>Mutual swaps</h3>
+      <p>When you click “Find a swap”, the dates you want off get added to a shared “looking” list. Anyone else searching for the same dates sees you as a top match. The next time you open the app, you'll see a banner if a colleague is currently looking for one of your shifts — tap it to swap straight away.</p>
+      <p>Your “looking” status updates each time you search. If you change your mind, hit “Stop looking” in step 2 to clear it.</p>
+
+      <h3>Your availability</h3>
+      <p>Flag dates you can’t take a swap onto in step 3. These save automatically and are visible to anyone else using the shop, so they won’t suggest you on those days. Edit them whenever your plans change.</p>
+
+      <h3>Drafting the emails</h3>
+      <p>Once a match looks good, use “Draft ask-them email” to message the other doctor — agreement usually happens offline. Once they’ve agreed, use “Draft rota-team email” to send the formal swap request. Each email opens in a draft you can edit before sending.</p>
+
+      <div class="callout">
+        <strong>Always check with the rota team.</strong> The shop suggests options based on the spreadsheet — the rota team makes every swap official. If anything looks wrong, or you can’t find a sensible swap, speak to them directly.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- EMAIL MODAL -->
+<div class="modal" id="email-modal" role="dialog" aria-labelledby="email-modal-title" aria-modal="true">
+  <div class="modal-card">
+    <div class="modal-head">
+      <div>
+        <div class="modal-eyebrow">Draft email</div>
+        <h2 class="modal-title" id="email-modal-title">Email</h2>
+      </div>
+      <button class="modal-close" id="email-close" aria-label="Close">✕</button>
+    </div>
+    <div class="email-fields">
+      <div>
+        <label class="fld" for="email-to">To</label>
+        <input type="email" id="email-to" placeholder="(leave blank to add manually)" />
+      </div>
+      <div>
+        <label class="fld" for="email-subject">Subject</label>
+        <input type="text" id="email-subject" />
+      </div>
+      <div>
+        <label class="fld" for="email-body">Body — edit before sending</label>
+        <textarea id="email-body" spellcheck="true"></textarea>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-cancel" id="email-copy" type="button">Copy text</button>
+      <button class="btn-primary" id="email-open" type="button">Open in email app</button>
+    </div>
+  </div>
 </div>
 
 <script src="data.js"></script>
