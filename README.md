@@ -1,8 +1,17 @@
 # Resident Doctor Swap
 
+**Version 1.1.0** · Rota period 5 Aug 2026 – 2 Feb 2027
+
 A small static web app that reads your SpR on-call rota and suggests the **best person to ask for a shift swap** when you want a day (or block of days) off.
 
 Everything runs in the browser. There's no server, no database, no login — the rota is baked into `data.js` as a JavaScript object, so it works on Netlify, GitHub Pages, or even by opening `index.html` straight off your machine.
+
+The version number appears in the footer of the app itself so anyone using it can confirm what they're on.
+
+## Changelog
+
+- **v1.1.0** — Mutual swap matching (shared "looking" list, opening banner, mutual-match ribbons). Multi-mode calendar picker for unavailable dates (tap individual days or tap a range). Confirmed weekends/BH don't travel as rest days; confirmed LTFT days are never swapped onto. Version visible in footer.
+- **v1.0.0** — Initial release. Like-for-like matching with rest days travelling. Shared unavailability store. Three-way swap fallback. Off-rota period detection (≥28-day gaps). Email drafting for both partner and rota team. Help modal in-app.
 
 ---
 

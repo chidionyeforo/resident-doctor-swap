@@ -137,8 +137,19 @@
 
   // Record protected rest days either side, and the explicit OFF-day indices
   // that travel with a like-for-like swap.
+  //
+  // A Saturday/Sunday/BH OFF day does NOT travel: those days are off by
+  // default in the standard rota pattern, not a consequence of the on-call.
+  // Only weekday OFF days count as consequential rest that moves with the
+  // shift. Multi-day on-call blocks that span weekends are unaffected because
+  // those weekend dates are OC (in the block), not OFF (adjacent rest).
   Engine.prototype._annotateRest = function (label, block) {
     var offish = { OFF: 1, LTFT: 1, INACTIVE: 1 };
+    var self = this;
+    function isStandardWeekend(idx) {
+      var d = self.data.dates[idx];
+      return d && (d.wknd || d.bh);
+    }
     var before = 0, i = block.start - 1;
     while (i >= 0 && offish[this.cell(label, i).s]) { before++; i--; }
     var after = 0, j = block.end + 1, n = this.data.dates.length;
@@ -146,10 +157,17 @@
     block.offBefore = before; block.offAfter = after;
     block.len = block.idxs.length;
 
+    // Only weekday OFFs travel — weekends/BH were off anyway.
     var rb = [], k = block.start - 1, CAP = 3;
-    while (k >= 0 && this.cell(label, k).s === "OFF" && rb.length < CAP) { rb.unshift(k); k--; }
+    while (k >= 0 && this.cell(label, k).s === "OFF" && rb.length < CAP) {
+      if (!isStandardWeekend(k)) rb.unshift(k);
+      k--;
+    }
     var ra = [], m = block.end + 1;
-    while (m < n && this.cell(label, m).s === "OFF" && ra.length < CAP) { ra.push(m); m++; }
+    while (m < n && this.cell(label, m).s === "OFF" && ra.length < CAP) {
+      if (!isStandardWeekend(m)) ra.push(m);
+      m++;
+    }
     block.restBeforeIdxs = rb; block.restAfterIdxs = ra;
   };
 
@@ -727,23 +745,216 @@
     renderUnavail();
   }
 
-  (function initUnavail() {
-    $("#unavail-from").min = data.dateStart; $("#unavail-from").max = data.dateEnd;
-    $("#unavail-to").min = data.dateStart; $("#unavail-to").max = data.dateEnd;
-    $("#unavail-from").addEventListener("change", function (e) {
-      if (!$("#unavail-to").value || $("#unavail-to").value < e.target.value) $("#unavail-to").value = e.target.value;
+  // ---- calendar picker (multi-day + range modes) ------------------------
+  var Cal = {
+    mode: "single",           // "single" or "range"
+    viewMonth: null,          // Date set to 1st of currently-shown month
+    pending: {},              // {iso:1} - dates selected in this session, not yet saved
+    rangeStart: null          // iso, set on first click in range mode
+  };
+
+  function isoFromDate(d) {
+    var y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, "0"), dd = String(d.getDate()).padStart(2, "0");
+    return y + "-" + m + "-" + dd;
+  }
+  function ymOfIso(iso) { return iso.slice(0, 7); }
+  function clampMonth(d) {
+    // clamp to rota range; return Date at start of that month or null if out of range
+    var first = new Date(d.getFullYear(), d.getMonth(), 1);
+    var lastValid = new Date(data.dateEnd + "T00:00:00");
+    var firstValid = new Date(data.dateStart + "T00:00:00");
+    var endMonth = new Date(lastValid.getFullYear(), lastValid.getMonth(), 1);
+    var startMonth = new Date(firstValid.getFullYear(), firstValid.getMonth(), 1);
+    if (first < startMonth) return startMonth;
+    if (first > endMonth) return endMonth;
+    return first;
+  }
+
+  (function initCalendar() {
+    // initial month = first rota month
+    Cal.viewMonth = new Date(data.dateStart + "T00:00:00");
+    Cal.viewMonth = new Date(Cal.viewMonth.getFullYear(), Cal.viewMonth.getMonth(), 1);
+
+    // mode toggle
+    document.querySelectorAll(".cal-mode").forEach(function (b) {
+      b.addEventListener("click", function () {
+        document.querySelectorAll(".cal-mode").forEach(function (x) { x.classList.remove("active"); });
+        b.classList.add("active");
+        Cal.mode = b.dataset.mode;
+        Cal.rangeStart = null;
+        renderCalendar();
+        updateCalHelp();
+      });
     });
-    $("#unavail-add").addEventListener("click", function () {
-      var s = $("#unavail-from").value, e = $("#unavail-to").value || s;
-      if (!s) { flash($("#unavail-msg"), "Pick a start date first."); return; }
-      if (idxOfIso(s) == null || idxOfIso(e) == null) { flash($("#unavail-msg"), "Dates must fall inside the rota period."); return; }
-      state.unavailRanges.push({ start: s, end: e });
-      $("#unavail-from").value = ""; $("#unavail-to").value = "";
-      $("#unavail-from").focus();
+
+    $("#cal-prev").addEventListener("click", function () {
+      var d = new Date(Cal.viewMonth.getFullYear(), Cal.viewMonth.getMonth() - 1, 1);
+      var c = clampMonth(d); if (c) { Cal.viewMonth = c; renderCalendar(); }
+    });
+    $("#cal-next").addEventListener("click", function () {
+      var d = new Date(Cal.viewMonth.getFullYear(), Cal.viewMonth.getMonth() + 1, 1);
+      var c = clampMonth(d); if (c) { Cal.viewMonth = c; renderCalendar(); }
+    });
+
+    $("#cal-clear-pending").addEventListener("click", function () {
+      Cal.pending = {}; Cal.rangeStart = null;
+      renderCalendar(); renderPending();
+    });
+    $("#cal-save-pending").addEventListener("click", function () {
+      var pendingList = Object.keys(Cal.pending).sort();
+      if (!pendingList.length) return;
+      // collapse contiguous ISO dates into ranges (matches existing seedUnavail logic)
+      var ranges = [];
+      var cur = { start: pendingList[0], end: pendingList[0] };
+      for (var i = 1; i < pendingList.length; i++) {
+        var prevI = idxOfIso(cur.end), nextI = idxOfIso(pendingList[i]);
+        if (prevI != null && nextI === prevI + 1) cur.end = pendingList[i];
+        else { ranges.push(cur); cur = { start: pendingList[i], end: pendingList[i] }; }
+      }
+      ranges.push(cur);
+      // merge with existing state.unavailRanges
+      ranges.forEach(function (r) { state.unavailRanges.push(r); });
+      Cal.pending = {}; Cal.rangeStart = null;
       persistRangesToPrefs();
-      renderUnavail();
+      renderCalendar(); renderPending(); renderUnavail();
     });
+
+    updateCalHelp();
+    renderCalendar();
   })();
+
+  function updateCalHelp() {
+    var t = $("#cal-help-text");
+    if (Cal.mode === "single") {
+      t.textContent = "Tap any days you can’t take a swap onto. Tap again to unselect.";
+    } else {
+      t.textContent = Cal.rangeStart
+        ? "Now tap the end of the range."
+        : "Tap the first day of the range, then the last.";
+    }
+  }
+
+  function savedDatesSet() {
+    // Dates already SAVED as unavailable (existing committed selections)
+    var set = {};
+    state.unavailRanges.forEach(function (r) {
+      var s = idxOfIso(r.start), e = idxOfIso(r.end);
+      if (s == null || e == null) return;
+      if (s > e) { var t = s; s = e; e = t; }
+      for (var i = s; i <= e; i++) set[isoOfIdx(i)] = 1;
+    });
+    return set;
+  }
+
+  function renderCalendar() {
+    var grid = $("#cal-grid"); grid.innerHTML = "";
+    var year = Cal.viewMonth.getFullYear(), month = Cal.viewMonth.getMonth();
+    var first = new Date(year, month, 1);
+    var lastDay = new Date(year, month + 1, 0).getDate();
+    // Monday-first weekday index
+    var firstWd = (first.getDay() + 6) % 7;
+    $("#cal-month-label").textContent = first.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+
+    // prev/next disabled when at extremes
+    var minMonth = new Date(data.dateStart + "T00:00:00");
+    var maxMonth = new Date(data.dateEnd + "T00:00:00");
+    $("#cal-prev").disabled = (year === minMonth.getFullYear() && month === minMonth.getMonth())
+      || (new Date(year, month, 1) < new Date(minMonth.getFullYear(), minMonth.getMonth(), 1));
+    $("#cal-next").disabled = (year === maxMonth.getFullYear() && month === maxMonth.getMonth())
+      || (new Date(year, month, 1) > new Date(maxMonth.getFullYear(), maxMonth.getMonth(), 1));
+
+    var saved = savedDatesSet();
+    var today = isoFromDate(new Date());
+    for (var p = 0; p < firstWd; p++) {
+      var b = el("button", "cal-day cal-empty"); b.type = "button"; b.disabled = true; grid.appendChild(b);
+    }
+    for (var d = 1; d <= lastDay; d++) {
+      var iso = isoFromDate(new Date(year, month, d));
+      var idx = idxOfIso(iso);
+      var btn = el("button", "cal-day"); btn.type = "button"; btn.textContent = d;
+      var inRange = (idx != null);
+      var dayDate = new Date(year, month, d);
+      var isWknd = dayDate.getDay() === 0 || dayDate.getDay() === 6;
+      if (isWknd) btn.classList.add("cal-wknd");
+      if (!inRange) btn.classList.add("cal-outside");
+      if (iso === today) btn.classList.add("cal-today");
+      if (saved[iso]) btn.classList.add("cal-saved");
+      if (Cal.pending[iso]) btn.classList.add("cal-pending");
+      // range preview
+      if (Cal.mode === "range" && Cal.rangeStart && !Cal.pending[iso]) {
+        if (iso === Cal.rangeStart) btn.classList.add("cal-range-start");
+      }
+      if (inRange) {
+        (function (iso) {
+          btn.addEventListener("click", function () { onDayClick(iso); });
+        })(iso);
+      } else {
+        btn.disabled = true;
+      }
+      grid.appendChild(btn);
+    }
+  }
+
+  function onDayClick(iso) {
+    var saved = savedDatesSet();
+    if (saved[iso]) {
+      // Already saved — tapping a saved date removes it from the saved list
+      // (people get a quick way to unflag a date that's already stored).
+      removeSavedDate(iso);
+      return;
+    }
+    if (Cal.mode === "single") {
+      if (Cal.pending[iso]) delete Cal.pending[iso];
+      else Cal.pending[iso] = 1;
+      renderCalendar(); renderPending();
+    } else {
+      // range mode
+      if (!Cal.rangeStart) {
+        Cal.rangeStart = iso;
+        updateCalHelp(); renderCalendar();
+      } else {
+        var s = Cal.rangeStart, e = iso;
+        if (s > e) { var t = s; s = e; e = t; }
+        var si = idxOfIso(s), ei = idxOfIso(e);
+        if (si != null && ei != null) {
+          for (var i = si; i <= ei; i++) Cal.pending[isoOfIdx(i)] = 1;
+        }
+        Cal.rangeStart = null;
+        updateCalHelp(); renderCalendar(); renderPending();
+      }
+    }
+  }
+
+  function removeSavedDate(iso) {
+    // Split any existing range that contains this date so the date is dropped
+    var idx = idxOfIso(iso); if (idx == null) return;
+    var next = [];
+    state.unavailRanges.forEach(function (r) {
+      var rs = idxOfIso(r.start), re = idxOfIso(r.end);
+      if (rs == null || re == null) { next.push(r); return; }
+      if (rs > re) { var t = rs; rs = re; re = t; }
+      if (idx < rs || idx > re) { next.push(r); return; }
+      // split
+      if (idx > rs) next.push({ start: isoOfIdx(rs), end: isoOfIdx(idx - 1) });
+      if (idx < re) next.push({ start: isoOfIdx(idx + 1), end: isoOfIdx(re) });
+    });
+    state.unavailRanges = next;
+    persistRangesToPrefs();
+    renderCalendar(); renderUnavail();
+  }
+
+  function renderPending() {
+    var p = $("#cal-pending"); p.innerHTML = "";
+    var count = Object.keys(Cal.pending).length;
+    var btn = $("#cal-save-pending");
+    if (!count) {
+      btn.disabled = true; btn.textContent = "Save selection";
+      return;
+    }
+    btn.disabled = false;
+    btn.textContent = "Save " + count + (count === 1 ? " date" : " dates");
+    p.textContent = count + (count === 1 ? " date selected" : " dates selected") + " — not yet saved";
+  }
 
   // Whenever the unavailability list changes, mirror it back to the shared
   // store so other people see this person's flagged dates.

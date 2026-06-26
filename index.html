@@ -226,9 +226,91 @@
 
   /* ---- unavailability panel (single, merged) ------------------------- */
   .unavail-section{margin-top:8px}
-  .unavail-row{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap}
-  .unavail-row .col{flex:1;min-width:120px}
-  .unavail-row label.fld{margin-bottom:5px}
+  /* ---- calendar picker ----------------------------------------------- */
+  .cal-modes{
+    display:flex;gap:6px;background:var(--paper);padding:4px;border-radius:10px;
+    border:1px solid var(--line);margin-bottom:10px;
+  }
+  .cal-mode{
+    flex:1;font-family:var(--display);font-weight:600;font-size:.83rem;
+    background:transparent;border:none;color:var(--muted);
+    padding:9px 12px;border-radius:7px;cursor:pointer;
+    transition:background .15s,color .15s;
+  }
+  .cal-mode.active{background:#fff;color:var(--teal-dark);box-shadow:var(--shadow-sm)}
+  .cal-mode:hover:not(.active){color:var(--ink-soft)}
+
+  .cal-help{margin:0 2px 10px;font-size:.78rem;color:var(--muted);line-height:1.4;min-height:1.3em}
+
+  .cal-host{
+    border:1px solid var(--line);border-radius:var(--radius);
+    background:#fff;padding:12px;
+  }
+  .cal-nav{
+    display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;
+  }
+  .cal-nav-btn{
+    width:34px;height:34px;border-radius:8px;
+    border:1.5px solid var(--line);background:#fff;color:var(--ink-soft);
+    font-size:1.3rem;line-height:1;cursor:pointer;font-family:var(--display);
+    transition:border-color .12s,background .12s,color .12s;
+    display:flex;align-items:center;justify-content:center;
+  }
+  .cal-nav-btn:hover{border-color:var(--teal);color:var(--teal-dark);background:var(--teal-wash)}
+  .cal-nav-btn:disabled{opacity:.35;cursor:not-allowed}
+  .cal-month-label{
+    font-family:var(--display);font-weight:700;font-size:1rem;
+    color:var(--ink);letter-spacing:-.01em;
+  }
+  .cal-weekdays{
+    display:grid;grid-template-columns:repeat(7,1fr);gap:2px;
+    margin-bottom:4px;font-family:var(--mono);font-size:.65rem;
+    letter-spacing:.06em;color:var(--muted);text-align:center;padding:0 2px;
+  }
+  .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px}
+  .cal-day{
+    border:1.5px solid transparent;background:transparent;
+    aspect-ratio:1;display:flex;align-items:center;justify-content:center;
+    border-radius:7px;cursor:pointer;font-family:var(--body);font-size:.88rem;
+    color:var(--ink);padding:0;
+    transition:background .12s,border-color .12s,color .12s,transform .08s;
+    position:relative;
+  }
+  .cal-day.cal-empty{visibility:hidden}
+  .cal-day.cal-wknd{color:var(--muted)}
+  .cal-day.cal-outside{color:#c4ccc9;cursor:not-allowed}
+  .cal-day:not(.cal-empty):not(.cal-outside):hover{background:var(--teal-wash);border-color:var(--teal-tint)}
+  .cal-day.cal-saved{
+    background:var(--coral-tint);color:var(--coral-dark);font-weight:600;
+    border-color:#f0c5b3;
+  }
+  .cal-day.cal-saved::after{
+    content:"";position:absolute;width:4px;height:4px;border-radius:50%;
+    background:var(--coral);bottom:4px;left:50%;transform:translateX(-50%);
+  }
+  .cal-day.cal-pending{
+    background:var(--teal);color:#fff;font-weight:600;border-color:var(--teal-dark);
+  }
+  .cal-day.cal-pending:hover{background:var(--teal-dark)}
+  .cal-day.cal-range-mid{
+    background:var(--teal-tint);color:var(--teal-dark);border-color:var(--teal-tint);
+  }
+  .cal-day.cal-range-start,.cal-day.cal-range-end{
+    background:var(--teal);color:#fff;font-weight:600;border-color:var(--teal-dark);
+  }
+  .cal-day.cal-today{font-weight:700}
+  .cal-day.cal-today:not(.cal-saved):not(.cal-pending):not(.cal-range-mid):not(.cal-range-start):not(.cal-range-end){
+    border-color:var(--teal-tint);
+  }
+
+  .cal-pending{
+    margin-top:11px;min-height:1.2em;font-size:.82rem;
+    color:var(--teal-dark);font-family:var(--mono);letter-spacing:.02em;
+  }
+  .cal-pending:empty{display:none}
+  .cal-actions{display:flex;gap:8px;margin-top:10px}
+  .cal-actions button{flex:1}
+  .cal-actions .btn-solid:disabled{opacity:.4;cursor:not-allowed;background:var(--teal)}
   button.btn-ghost{
     font-family:var(--display);font-weight:600;font-size:.88rem;
     border:1.5px solid var(--line);background:#fff;color:var(--ink);
@@ -534,6 +616,12 @@
     color:var(--muted);font-size:.78rem;text-align:center;
     padding:34px 0 16px;font-family:var(--mono);letter-spacing:.04em;
   }
+  .footer-ver{
+    display:inline-block;margin-left:8px;
+    background:var(--paper-warm);border:1px solid var(--line);
+    border-radius:5px;padding:1px 7px;color:var(--teal-dark);
+    font-size:.7rem;font-weight:500;
+  }
 
   .hide{display:none !important}
 
@@ -596,17 +684,33 @@
     <p class="step-help">Flag dates you can’t cover — single days or ranges. These are saved for everyone, so colleagues running the swap shop won’t suggest you on those days either. You can edit this list any time.</p>
 
     <div class="unavail-section">
-      <div class="unavail-row">
-        <div class="col">
-          <label class="fld" for="unavail-from">From</label>
-          <input type="date" id="unavail-from" />
-        </div>
-        <div class="col">
-          <label class="fld" for="unavail-to">To (optional)</label>
-          <input type="date" id="unavail-to" />
-        </div>
-        <button class="btn-ghost" id="unavail-add" type="button">Add range</button>
+      <div class="cal-modes">
+        <button type="button" class="cal-mode active" data-mode="single">Tap days</button>
+        <button type="button" class="cal-mode" data-mode="range">Tap a range</button>
       </div>
+      <div class="cal-help">
+        <span class="cal-help-text" id="cal-help-text">Tap any days you can’t take a swap onto. Tap again to unselect.</span>
+      </div>
+
+      <div class="cal-host">
+        <div class="cal-nav">
+          <button type="button" class="cal-nav-btn" id="cal-prev" aria-label="Previous month">‹</button>
+          <div class="cal-month-label" id="cal-month-label"></div>
+          <button type="button" class="cal-nav-btn" id="cal-next" aria-label="Next month">›</button>
+        </div>
+        <div class="cal-weekdays">
+          <span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span>
+          <span>Fri</span><span>Sat</span><span>Sun</span>
+        </div>
+        <div class="cal-grid" id="cal-grid"></div>
+      </div>
+
+      <div class="cal-pending" id="cal-pending"></div>
+      <div class="cal-actions">
+        <button class="btn-ghost" id="cal-clear-pending" type="button">Clear selection</button>
+        <button class="btn-solid" id="cal-save-pending" type="button" disabled>Save selection</button>
+      </div>
+
       <div id="unavail-msg"></div>
       <div id="unavail-list"></div>
       <div id="unavail-status" class="savestatus"></div>
@@ -620,7 +724,7 @@
 
   <section id="results"></section>
 
-  <footer>The rota team makes all swaps official. Always confirm.</footer>
+  <footer>The rota team makes all swaps official. Always confirm. <span class="footer-ver">v1.1.0</span></footer>
 </div>
 
 <!-- HELP MODAL -->
