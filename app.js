@@ -193,8 +193,10 @@
     return block.idxs.filter(function (i) { return shiftClass(self.cell(label, i).v) === "NIGHT"; });
   }
 
-  // Can `label` work a NEW shift on day `idx`? Returns {ok, warn, reason}.
-  Engine.prototype.freeToWork = function (label, idx, pref) {
+  // Can `label` work a NEW shift on day `idx` of class `shiftCls`?
+  // Returns {ok, reason}. Removed the soft "you'd be using a rest day"
+  // warn — too noisy when the OFF is a standard weekend.
+  Engine.prototype.freeToWork = function (label, idx, pref, shiftCls) {
     if (pref && pref[idx]) return { ok: false, reason: "flagged themselves unavailable on this date" };
     if (!this.isOnOncallRota(label, idx)) return { ok: false, reason: "not on the on-call rota during this period" };
     var c = this.cell(label, idx);
@@ -206,9 +208,20 @@
     if (c.s === "OFF") {
       var prev = this.cell(label, idx - 1);
       if (prev.s === "OC") return { ok: false, reason: "protected rest day after an on-call block" };
-      return { ok: true, warn: "currently a day off — taking it uses a rest day" };
     }
-    return { ok: true }; // NWD
+    // 48-hour post-nights rule: a non-NIGHT shift can't fall within 3 calendar
+    // days of a NIGHT on-call. Thursday N1 (ends Fri 09:30) → earliest day/E/ward
+    // shift is Monday. Saturday ward would be only ~22h post-nights, which is
+    // too soon. NIGHT → NIGHT swaps are unaffected (rest pattern transfers).
+    if (shiftCls && shiftCls !== "NIGHT") {
+      for (var k = 1; k <= 3; k++) {
+        var pc = this.cell(label, idx - k);
+        if (pc.s === "OC" && shiftClass(pc.v) === "NIGHT") {
+          return { ok: false, reason: "less than 48h after a night shift on " + this.data.dates[idx - k].iso + " — need at least 3 clear days" };
+        }
+      }
+    }
+    return { ok: true };
   };
 
   function equity(a, b) {
@@ -261,9 +274,9 @@
       // INCOMING: can C take every selected day?
       var incomingOk = true;
       selIdxs.forEach(function (i) {
-        var f = self.freeToWork(cl, i, cPref);
+        var sCls = shiftClass(self.cell(reqLabel, i).v);
+        var f = self.freeToWork(cl, i, cPref, sCls);
         if (!f.ok) { incomingOk = false; reasons.push("can't take " + self.data.dates[i].iso + ": " + f.reason); }
-        else if (f.warn) warnings.push("On " + self.data.dates[i].iso + ", " + f.warn);
       });
       if (incomingOk && Object.keys(selNight).length) {
         var cn = self._nightSet(cl);
@@ -281,11 +294,11 @@
         var best = null;
         cBlocks.forEach(function (cb) {
           if (cb.used || cb.cls !== rb.cls) return;
-          var rOk = true, rWarn = [];
+          var rOk = true;
           cb.idxs.forEach(function (i) {
             if (unavail[i]) { rOk = false; return; }
-            var f = self.freeToWork(reqLabel, i);
-            if (!f.ok) rOk = false; else if (f.warn) rWarn.push("On " + self.data.dates[i].iso + ", " + f.warn + " (you)");
+            var f = self.freeToWork(reqLabel, i, null, cb.cls);
+            if (!f.ok) rOk = false;
           });
           if (!rOk) return;
           // Bonus to equity if the requester has flagged THIS exact block as
@@ -293,9 +306,9 @@
           var sc = equity(rb, cb);
           var mutualLeg = cb.idxs.some(function (i) { return myWanted[i]; });
           if (mutualLeg) sc -= 100; // dominate ordering
-          if (!best || sc < best.sc) best = { cb: cb, sc: sc, rWarn: rWarn, mutualLeg: mutualLeg };
+          if (!best || sc < best.sc) best = { cb: cb, sc: sc, mutualLeg: mutualLeg };
         });
-        if (best) { best.cb.used = true; assignments.push({ rb: rb, cb: best.cb, sc: best.sc, rWarn: best.rWarn, mutualLeg: best.mutualLeg }); }
+        if (best) { best.cb.used = true; assignments.push({ rb: rb, cb: best.cb, sc: best.sc, mutualLeg: best.mutualLeg }); }
         else allMatched = false;
       });
 
@@ -311,7 +324,6 @@
         var cMutualOnReq = cWanted && selIdxs.some(function (i) { return cWanted[i]; });
         assignments.forEach(function (a) {
           score += a.sc;
-          a.rWarn.forEach(function (w) { warnings.push(w); });
           if (!restMatches(a.rb, a.cb)) {
             warnings.push("Rest days either side differ (" + a.rb.restBeforeIdxs.length + "/" + a.rb.restAfterIdxs.length +
               " vs " + a.cb.restBeforeIdxs.length + "/" + a.cb.restAfterIdxs.length + ") — the off days travel with the shift, so one of you changes rest");
@@ -400,7 +412,7 @@
     function freeAll(l, block, pref, excludeSel) {
       return block.idxs.every(function (i) {
         if (excludeSel && sel[i]) return false;
-        return self.freeToWork(l, i, pref).ok;
+        return self.freeToWork(l, i, pref, block.cls).ok;
       });
     }
 
@@ -430,7 +442,7 @@
             if (!self._nightRunOk(D.label, dbNights, cbNights)) return;
             var youOk = db.idxs.every(function (i) {
               if (unavail[i] || sel[i]) return false;
-              return self.freeToWork(reqLabel, i).ok;
+              return self.freeToWork(reqLabel, i, null, db.cls).ok;
             });
             if (!youOk) return;
             if (!self._nightRunOk(reqLabel, rbNights, dbNights)) return;
@@ -486,12 +498,18 @@
   function el(tag, cls, txt) { var e = document.createElement(tag); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; }
   function fmt(iso, dow) {
     var d = new Date(iso + "T00:00:00");
-    var s = d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+    // UK format with padded day (dd Mmm yyyy) for unambiguous display.
+    var s = d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
     return (dow ? dow + " " : "") + s;
   }
   function fmtShort(iso) {
     var d = new Date(iso + "T00:00:00");
-    return d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+    return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
+  }
+  // Pure numeric dd/mm/yyyy for compact contexts
+  function fmtNumeric(iso) {
+    var d = new Date(iso + "T00:00:00");
+    return d.toLocaleDateString("en-GB"); // returns dd/mm/yyyy
   }
   function chip(type) { return el("span", "chip chip-" + shiftClass(type), type); }
 
@@ -755,7 +773,9 @@
       left.appendChild(dates);
 
       var rest = el("div", "shift-rest");
-      rest.textContent = b.offBefore + " off before · " + b.offAfter + " off after";
+      var beforeTxt = b.offBefore + " rest day" + (b.offBefore === 1 ? "" : "s") + " before";
+      var afterTxt = b.offAfter + " rest day" + (b.offAfter === 1 ? "" : "s") + " after";
+      rest.textContent = beforeTxt + " · " + afterTxt;
       left.appendChild(rest);
 
       card.appendChild(left);
@@ -1254,15 +1274,6 @@
       }
     }
 
-    var det = el("details", "why");
-    det.appendChild(el("summary", null, "Why others weren't suggested (" + res.ineligible.length + ")"));
-    var ul = el("ul");
-    res.ineligible.slice(0, 50).forEach(function (x) {
-      var li = el("li"); li.appendChild(el("strong", null, "Slot " + x.label + ": "));
-      li.appendChild(document.createTextNode(x.reasons.join("; ")));
-      ul.appendChild(li);
-    });
-    det.appendChild(ul); root.appendChild(det);
     root.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 

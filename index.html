@@ -269,14 +269,18 @@
   }
   .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px}
   .cal-day{
-    border:1.5px solid transparent;background:transparent;
-    aspect-ratio:1;display:flex;align-items:center;justify-content:center;
+    border:2px solid transparent;background:transparent;
+    aspect-ratio:1;
+    display:grid;place-items:center;
     border-radius:7px;cursor:pointer;font-family:var(--body);font-size:.88rem;
     color:var(--ink);padding:0;
-    transition:background .12s,border-color .12s,color .12s,transform .08s;
+    transition:background .12s,border-color .12s,color .12s;
     position:relative;
+    font-variant-numeric:tabular-nums;
+    box-sizing:border-box;
+    line-height:1;
   }
-  .cal-day.cal-empty{visibility:hidden}
+  .cal-day.cal-empty{visibility:hidden;pointer-events:none}
   .cal-day.cal-wknd{color:var(--muted)}
   .cal-day.cal-outside{color:#c4ccc9;cursor:not-allowed}
   .cal-day:not(.cal-empty):not(.cal-outside):hover{background:var(--teal-wash);border-color:var(--teal-tint)}
@@ -286,7 +290,7 @@
   }
   .cal-day.cal-saved::after{
     content:"";position:absolute;width:4px;height:4px;border-radius:50%;
-    background:var(--coral);bottom:4px;left:50%;transform:translateX(-50%);
+    background:var(--coral);bottom:5px;left:calc(50% - 2px);
   }
   .cal-day.cal-pending{
     background:var(--teal);color:#fff;font-weight:600;border-color:var(--teal-dark);
@@ -294,6 +298,7 @@
   .cal-day.cal-pending:hover{background:var(--teal-dark)}
   .cal-day.cal-range-mid{
     background:var(--teal-tint);color:var(--teal-dark);border-color:var(--teal-tint);
+    font-weight:600;
   }
   .cal-day.cal-range-start,.cal-day.cal-range-end{
     background:var(--teal);color:#fff;font-weight:600;border-color:var(--teal-dark);
@@ -791,7 +796,7 @@
   <section class="card hide" id="step2">
     <div class="step-num">Step 2</div>
     <div class="step-h">Which shifts do you want off?</div>
-    <p class="step-help">These are your swappable on-call shifts. Tap any to mark for swap. Night blocks swap as a whole.</p>
+    <p class="step-help">These are your swappable on-call shifts. Tap any to mark for swap.</p>
     <div id="looking-status" class="hide"></div>
     <div id="shift-filter" class="shift-filter hide" role="tablist" aria-label="Filter shifts by type"></div>
     <div id="shifts"></div>
@@ -843,7 +848,7 @@
 
   <section id="results"></section>
 
-  <footer>The rota team makes all swaps official. Always confirm. <span class="footer-ver">v1.2.0</span></footer>
+  <footer>The rota team makes all swaps official. Always confirm. <span class="footer-ver">v1.2.1</span></footer>
 </div>
 
 <!-- HELP MODAL -->
