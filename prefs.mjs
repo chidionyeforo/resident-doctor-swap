@@ -1,20 +1,42 @@
-// Shared availability store for Resident Doctor Swap.
+// Shared availability + audit store for Resident Doctor Swap.
 // Runs on Netlify (Functions + Netlify Blobs). No accounts, no API keys —
 // when the site is deployed on Netlify this "just works"; the front-end
 // falls back to per-device storage if it isn't reachable.
 //
-//   GET  /.netlify/functions/prefs           -> { "<slot>": { unavail:[iso...], updated }, ... }
-//   POST /.netlify/functions/prefs  body:    { label:"<slot>", prefs:{ unavail:[iso...] } }
+//   GET  /.netlify/functions/prefs            -> { prefs:{...}, audit:[...] }
+//   GET  /.netlify/functions/prefs?slim=1     -> { prefs:{...} }   (skip audit)
+//   POST /.netlify/functions/prefs            -> body shapes:
+//     { label, prefs:{ unavail:[iso...], wantedOff:[iso...] } }       — save prefs
+//     { label, pinHash:"sha256hex" }                                  — set/replace PIN
+//     { event:{ slot, action, partnerSlot?, dates?, kind?, ts } }     — append audit
 //
-// All prefs live in a single JSON blob ("all") under store "rds-prefs".
-// POST does read-merge-write on one slot so concurrent saves to *different*
+// Two blob keys: "all" (per-slot prefs/pin), "audit" (rolling event log,
+// capped at 500 most recent entries).
+//
+// POST does read-merge-write per slot so concurrent saves to *different*
 // slots don't clobber each other.
 
 import { getStore } from "@netlify/blobs";
 
 const STORE = "rds-prefs";
-const KEY = "all";
+const PREFS_KEY = "all";
+const AUDIT_KEY = "audit";
+const AUDIT_CAP = 500;
 const JSON_HEADERS = { "content-type": "application/json", "cache-control": "no-store" };
+
+function cleanIsoList(arr) {
+  if (!Array.isArray(arr)) return [];
+  return arr.filter((s) => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s)).slice(0, 400);
+}
+function cleanLabel(s) {
+  return typeof s === "string" && /^[A-Za-z0-9]{1,8}$/.test(s);
+}
+function cleanHash(s) {
+  return typeof s === "string" && /^[a-f0-9]{64}$/.test(s);
+}
+function cleanAction(s) {
+  return typeof s === "string" && /^[a-z_-]{1,32}$/.test(s);
+}
 
 export default async (request) => {
   let store;
@@ -25,36 +47,78 @@ export default async (request) => {
   }
 
   if (request.method === "GET") {
-    const all = (await store.get(KEY, { type: "json" })) || {};
-    return new Response(JSON.stringify(all), { status: 200, headers: JSON_HEADERS });
+    const url = new URL(request.url);
+    const slim = url.searchParams.get("slim") === "1";
+    const prefs = (await store.get(PREFS_KEY, { type: "json" })) || {};
+    if (slim) return new Response(JSON.stringify({ prefs }), { status: 200, headers: JSON_HEADERS });
+    const audit = (await store.get(AUDIT_KEY, { type: "json" })) || [];
+    return new Response(JSON.stringify({ prefs, audit }), { status: 200, headers: JSON_HEADERS });
   }
 
   if (request.method === "POST") {
     let body;
     try { body = await request.json(); } catch { body = null; }
-    const label = body && body.label;
-    if (!label || typeof label !== "string") {
-      return new Response(JSON.stringify({ error: "missing label" }), { status: 400, headers: JSON_HEADERS });
-    }
-    // sanitise: keep ISO date strings only, capped per list
-    function cleanIsoList(arr) {
-      if (!Array.isArray(arr)) return [];
-      return arr.filter((s) => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s)).slice(0, 400);
-    }
-    const unavail = cleanIsoList(body.prefs && body.prefs.unavail);
-    const wantedOff = cleanIsoList(body.prefs && body.prefs.wantedOff);
+    if (!body) return new Response(JSON.stringify({ error: "invalid body" }), { status: 400, headers: JSON_HEADERS });
 
-    const all = (await store.get(KEY, { type: "json" })) || {};
-    if (unavail.length || wantedOff.length) {
-      const entry = { updated: new Date().toISOString().slice(0, 10) };
-      if (unavail.length) entry.unavail = unavail;
-      if (wantedOff.length) entry.wantedOff = wantedOff;
-      all[label] = entry;
-    } else {
-      delete all[label]; // both empty = clear this person entirely
+    // === Audit event ===
+    if (body.event) {
+      const e = body.event;
+      if (!cleanLabel(e.slot) || !cleanAction(e.action)) {
+        return new Response(JSON.stringify({ error: "invalid event" }), { status: 400, headers: JSON_HEADERS });
+      }
+      const audit = (await store.get(AUDIT_KEY, { type: "json" })) || [];
+      const entry = {
+        slot: e.slot,
+        action: e.action,
+        ts: new Date().toISOString()
+      };
+      if (cleanLabel(e.partnerSlot)) entry.partnerSlot = e.partnerSlot;
+      if (Array.isArray(e.dates)) entry.dates = cleanIsoList(e.dates).slice(0, 20);
+      if (typeof e.kind === "string" && /^[a-z]{1,16}$/.test(e.kind)) entry.kind = e.kind;
+      audit.unshift(entry); // newest first
+      if (audit.length > AUDIT_CAP) audit.length = AUDIT_CAP;
+      await store.setJSON(AUDIT_KEY, audit);
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: JSON_HEADERS });
     }
-    await store.setJSON(KEY, all);
-    return new Response(JSON.stringify({ ok: true, label, unavailCount: unavail.length, wantedCount: wantedOff.length }), { status: 200, headers: JSON_HEADERS });
+
+    // === Prefs (unavail, wantedOff) and/or PIN set ===
+    const label = body.label;
+    if (!cleanLabel(label)) {
+      return new Response(JSON.stringify({ error: "missing/invalid label" }), { status: 400, headers: JSON_HEADERS });
+    }
+    const all = (await store.get(PREFS_KEY, { type: "json" })) || {};
+    const existing = all[label] || {};
+
+    // PIN set or change
+    if (body.pinHash !== undefined) {
+      if (!cleanHash(body.pinHash)) {
+        return new Response(JSON.stringify({ error: "invalid pinHash" }), { status: 400, headers: JSON_HEADERS });
+      }
+      existing.pinHash = body.pinHash;
+      existing.updated = new Date().toISOString().slice(0, 10);
+      all[label] = existing;
+      await store.setJSON(PREFS_KEY, all);
+      return new Response(JSON.stringify({ ok: true, label, pin: "set" }), { status: 200, headers: JSON_HEADERS });
+    }
+
+    // Prefs set
+    if (body.prefs) {
+      const unavail = cleanIsoList(body.prefs.unavail);
+      const wantedOff = cleanIsoList(body.prefs.wantedOff);
+      const updated = { updated: new Date().toISOString().slice(0, 10) };
+      if (unavail.length) updated.unavail = unavail;
+      if (wantedOff.length) updated.wantedOff = wantedOff;
+      if (existing.pinHash) updated.pinHash = existing.pinHash; // preserve PIN
+      if (unavail.length || wantedOff.length || existing.pinHash) {
+        all[label] = updated;
+      } else {
+        delete all[label];
+      }
+      await store.setJSON(PREFS_KEY, all);
+      return new Response(JSON.stringify({ ok: true, label }), { status: 200, headers: JSON_HEADERS });
+    }
+
+    return new Response(JSON.stringify({ error: "nothing to save" }), { status: 400, headers: JSON_HEADERS });
   }
 
   return new Response(JSON.stringify({ error: "method not allowed" }), { status: 405, headers: JSON_HEADERS });

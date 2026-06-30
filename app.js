@@ -222,8 +222,25 @@
   }
 
   /* Core search.
-     prefs: { label: { unavail:{idx:1}, wantedOff:{idx:1} } } */
+     prefs: { label: { unavail:{idx:1}, wantedOff:{idx:1} } }
+     If selIdxs spans multiple non-contiguous blocks of on-call, also runs
+     each block independently and returns per-block matches. People most
+     commonly swap one block at a time with whoever fits that block — they
+     don't need a single partner to take everything. */
   Engine.prototype.findSwaps = function (reqLabel, selIdxs, unavail, prefs) {
+    var combined = this._searchFor(reqLabel, selIdxs, unavail, prefs);
+    if (combined.reqBlocks.length > 1) {
+      // Independent per-block searches
+      var self = this;
+      combined.perBlock = combined.reqBlocks.map(function (b) {
+        var r = self._searchFor(reqLabel, b.idxs, unavail, prefs);
+        return { block: b, swaps: r.swaps, chains: r.chains, coverOnly: r.coverOnly };
+      });
+    }
+    return combined;
+  };
+
+  Engine.prototype._searchFor = function (reqLabel, selIdxs, unavail, prefs) {
     unavail = unavail || {};
     prefs = prefs || {};
     var self = this;
@@ -457,7 +474,10 @@
     person: null,
     selected: {},          // {idx:1} - requester's own on-call days they want off
     unavailRanges: [],     // [{start:iso,end:iso}, ...] - dates THEY (the active user) can't take a swap onto
-    rotaTeamEmail: ""      // optional, persisted in localStorage
+    rotaTeamEmail: "",     // optional, persisted in localStorage
+    shiftFilter: "ALL",    // filter chip: ALL | NIGHT | DAY | WARD | E
+    verifiedSlot: null,    // slot label confirmed by PIN this session
+    admin: false           // ?admin=1 in URL enables admin banner + audit view
   };
   var allPrefs = {};
   var prefsMap = {};
@@ -494,22 +514,71 @@
   var Store = {
     ENDPOINT: "/.netlify/functions/prefs",
     CACHE: "rds_prefs_cache",
+    AUDIT_CACHE: "rds_audit_cache",
     shared: false,
-    loadAll: function () {
+    auditLog: [],
+    // Returns object of {label: {unavail, wantedOff, pinHash, updated}}; populates this.auditLog
+    loadAll: function (slim) {
       var self = this;
-      return fetch(this.ENDPOINT, { cache: "no-store" })
+      var url = this.ENDPOINT + (slim ? "?slim=1" : "");
+      return fetch(url, { cache: "no-store" })
         .then(function (r) { if (!r.ok) throw new Error("no backend"); return r.json(); })
-        .then(function (j) { self.shared = true; try { localStorage.setItem(self.CACHE, JSON.stringify(j)); } catch (e) {} return j || {}; })
-        .catch(function () { self.shared = false; try { return JSON.parse(localStorage.getItem(self.CACHE) || "{}"); } catch (e) { return {}; } });
+        .then(function (j) {
+          self.shared = true;
+          var prefs = (j && j.prefs) || {};
+          var audit = (j && j.audit) || [];
+          try { localStorage.setItem(self.CACHE, JSON.stringify(prefs)); } catch (e) {}
+          try { localStorage.setItem(self.AUDIT_CACHE, JSON.stringify(audit)); } catch (e) {}
+          self.auditLog = audit;
+          return prefs;
+        })
+        .catch(function () {
+          self.shared = false;
+          try { self.auditLog = JSON.parse(localStorage.getItem(self.AUDIT_CACHE) || "[]"); } catch (e) { self.auditLog = []; }
+          try { return JSON.parse(localStorage.getItem(self.CACHE) || "{}"); } catch (e) { return {}; }
+        });
     },
     save: function (label, prefs) {
       var self = this;
-      try { var all = JSON.parse(localStorage.getItem(self.CACHE) || "{}"); all[label] = prefs; localStorage.setItem(self.CACHE, JSON.stringify(all)); } catch (e) {}
+      // optimistic local cache update so it survives a reload either way
+      try {
+        var all = JSON.parse(localStorage.getItem(self.CACHE) || "{}");
+        all[label] = prefs;
+        localStorage.setItem(self.CACHE, JSON.stringify(all));
+      } catch (e) {}
       return fetch(this.ENDPOINT, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ label: label, prefs: prefs })
       }).then(function (r) { self.shared = r.ok; return r.ok; })
         .catch(function () { self.shared = false; return false; });
+    },
+    setPin: function (label, pinHash) {
+      var self = this;
+      // update local cache so the verify flow works offline
+      try {
+        var all = JSON.parse(localStorage.getItem(self.CACHE) || "{}");
+        all[label] = all[label] || {};
+        all[label].pinHash = pinHash;
+        localStorage.setItem(self.CACHE, JSON.stringify(all));
+      } catch (e) {}
+      return fetch(this.ENDPOINT, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label: label, pinHash: pinHash })
+      }).then(function (r) { self.shared = r.ok; return r.ok; })
+        .catch(function () { self.shared = false; return false; });
+    },
+    logEvent: function (event) {
+      var self = this;
+      // also append to local audit cache so it shows up immediately
+      var entry = Object.assign({ ts: new Date().toISOString() }, event);
+      self.auditLog.unshift(entry);
+      if (self.auditLog.length > 500) self.auditLog.length = 500;
+      try { localStorage.setItem(self.AUDIT_CACHE, JSON.stringify(self.auditLog)); } catch (e) {}
+      return fetch(this.ENDPOINT, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ event: event })
+      }).then(function (r) { return r.ok; })
+        .catch(function () { return false; });
     }
   };
   function rebuildPrefsMap() {
@@ -536,15 +605,20 @@
       state.person = sel.value || null;
       state.selected = {};
       state.unavailRanges = [];
+      state.shiftFilter = "ALL";
+      state.verifiedSlot = null; // require fresh PIN when switching slots
       renderPerson();
       renderUnavail();
+      renderLoginBadge();
       // Refresh from the shared store so seeded data is up-to-date and we can
       // check whether anyone is currently looking for one of this person's shifts.
       Store.loadAll().then(function (j) {
         allPrefs = j || {}; rebuildPrefsMap();
         seedUnavailFromPrefs();
         renderMutualBanner();
-        renderPerson(); // re-render to show "wanted off" badges on shifts
+        renderPerson();
+        // Trigger PIN modal once we know whether this slot has set a PIN before
+        if (state.person) openPinModal();
       });
     });
   })();
@@ -607,7 +681,53 @@
 
     // Group on-calls into blocks for display
     var blocks = engine.groupBlocks(state.person, shifts.map(function (x) { return x.idx; }));
-    blocks.forEach(function (b) {
+
+    // Hide blocks entirely in the past — passed shifts can't be swapped.
+    var todayIso = isoFromDate(new Date());
+    blocks = blocks.filter(function (b) {
+      var lastIso = data.dates[b.end].iso;
+      return lastIso >= todayIso;
+    });
+
+    if (!blocks.length) {
+      wrap.appendChild(el("p", "empty", "No upcoming swappable on-call shifts in the rota period."));
+      $("#shift-filter").classList.add("hide");
+      return;
+    }
+
+    // Render shift-class filter chips (only if there's more than one class)
+    var classCounts = { NIGHT: 0, DAY: 0, WARD: 0, E: 0 };
+    blocks.forEach(function (b) { classCounts[b.cls] = (classCounts[b.cls] || 0) + 1; });
+    var classes = Object.keys(classCounts).filter(function (k) { return classCounts[k] > 0; });
+    var filterWrap = $("#shift-filter"); filterWrap.innerHTML = "";
+    if (classes.length > 1) {
+      filterWrap.classList.remove("hide");
+      var labels = { NIGHT: "Nights", DAY: "Days", WARD: "Ward", E: "Evening (E)" };
+      var allChip = el("button", "filter-chip" + (state.shiftFilter === "ALL" ? " active" : ""), "All");
+      allChip.dataset.cls = "ALL";
+      allChip.appendChild(el("span", "filter-chip-count", String(blocks.length)));
+      filterWrap.appendChild(allChip);
+      classes.forEach(function (cls) {
+        var chip = el("button", "filter-chip" + (state.shiftFilter === cls ? " active" : ""), labels[cls] || cls);
+        chip.dataset.cls = cls;
+        chip.appendChild(el("span", "filter-chip-count", String(classCounts[cls])));
+        filterWrap.appendChild(chip);
+      });
+      filterWrap.querySelectorAll(".filter-chip").forEach(function (c) {
+        c.addEventListener("click", function () {
+          state.shiftFilter = c.dataset.cls;
+          renderPerson();
+        });
+      });
+    } else {
+      filterWrap.classList.add("hide");
+    }
+
+    var filtered = state.shiftFilter && state.shiftFilter !== "ALL"
+      ? blocks.filter(function (b) { return b.cls === state.shiftFilter; })
+      : blocks;
+
+    filtered.forEach(function (b) {
       var card = el("div", "shift-row");
       card.dataset.idxs = b.idxs.join(",");
       var alreadyAdvertised = b.idxs.every(function (i) { return myAdvertised[data.dates[i].iso]; });
@@ -989,13 +1109,20 @@
   function publishWantedOff(isoList) {
     if (!state.person) return Promise.resolve(false);
     var prev = allPrefs[state.person] || {};
+    var sorted = (isoList || []).slice().sort();
     var p = {
       unavail: prev.unavail || [],
-      wantedOff: (isoList || []).slice().sort(),
+      wantedOff: sorted,
       updated: new Date().toISOString().slice(0, 10)
     };
     allPrefs[state.person] = p;
     rebuildPrefsMap();
+    // Audit: was something added or cleared?
+    if (sorted.length) {
+      Store.logEvent({ slot: state.person, action: "publish_wanted", dates: sorted });
+    } else if ((prev.wantedOff || []).length) {
+      Store.logEvent({ slot: state.person, action: "clear_wanted" });
+    }
     return Store.save(state.person, p);
   }
 
@@ -1054,41 +1181,77 @@
     var root = $("#results"); root.innerHTML = "";
     root.appendChild(summaryCard(res.reqBlocks));
 
-    var mutualSwaps = res.swaps.filter(function (s) { return s.mutual; });
-    var otherSwaps = res.swaps.filter(function (s) { return !s.mutual; });
+    var multi = res.perBlock && res.perBlock.length > 1;
 
-    if (mutualSwaps.length) {
-      root.appendChild(el("h3", "res-h mutual-h", "Mutual swap — both of you are looking"));
-      mutualSwaps.slice(0, 5).forEach(function (sw, i) { root.appendChild(swapCard(sw, i === 0)); });
-    }
+    if (multi) {
+      // Per-block matching is the primary view. People most commonly swap
+      // one block at a time with whoever fits each block individually.
+      root.appendChild(el("h3", "res-h", "Swap each block independently"));
+      var intro = el("p", "perblock-intro",
+        "You can match a different person for each block — that's how most swaps work.");
+      root.appendChild(intro);
 
-    if (otherSwaps.length) {
-      root.appendChild(el("h3", "res-h", mutualSwaps.length ? "Other direct swaps" : "Direct swaps"));
-      otherSwaps.slice(0, 8).forEach(function (sw, i) { root.appendChild(swapCard(sw, i === 0 && !mutualSwaps.length)); });
-    }
+      res.perBlock.forEach(function (pb) {
+        root.appendChild(perBlockSection(pb));
+      });
 
-    if (!res.swaps.length) {
-      if (res.chains && res.chains.length) {
-        var n0 = el("div", "card note");
-        n0.appendChild(el("strong", null, "No direct two-way swap available."));
-        n0.appendChild(el("p", null, "Try one of the three-way swaps below — the loop closes so everyone keeps the same number of on-calls."));
-        root.appendChild(n0);
-      } else {
-        var none = el("div", "card note");
-        none.appendChild(el("strong", null, "No clean swap found."));
-        none.appendChild(el("p", null, "Nobody can take all the days you've selected and hand back an equivalent shift. The people below could cover your shift — your rota team can arrange a return manually."));
-        root.appendChild(none);
+      // Combined fallback: only show if there's at least one one-person-handles-all match
+      if (res.swaps.length) {
+        var combo = el("details", "combined-fallback");
+        var sum = el("summary", null,
+          "Or one person for everything (" + res.swaps.length +
+          (res.swaps.length === 1 ? " option" : " options") + ")");
+        combo.appendChild(sum);
+        var mutuals = res.swaps.filter(function (s) { return s.mutual; });
+        var others = res.swaps.filter(function (s) { return !s.mutual; });
+        if (mutuals.length) {
+          combo.appendChild(el("h4", "res-subh mutual-h", "Mutual — both of you are looking"));
+          mutuals.slice(0, 3).forEach(function (sw) { combo.appendChild(swapCard(sw, false)); });
+        }
+        if (others.length) {
+          combo.appendChild(el("h4", "res-subh", mutuals.length ? "Other" : "Direct swaps"));
+          others.slice(0, 5).forEach(function (sw) { combo.appendChild(swapCard(sw, false)); });
+        }
+        root.appendChild(combo);
       }
-    }
+    } else {
+      // Single-block view: existing behaviour
+      var mutualSwaps = res.swaps.filter(function (s) { return s.mutual; });
+      var otherSwaps = res.swaps.filter(function (s) { return !s.mutual; });
 
-    if (res.chains && res.chains.length) {
-      root.appendChild(el("h3", "res-h", "Three-way swaps"));
-      res.chains.slice(0, 5).forEach(function (ch, i) { root.appendChild(chainCard(ch, !res.swaps.length && i === 0)); });
-    }
+      if (mutualSwaps.length) {
+        root.appendChild(el("h3", "res-h mutual-h", "Mutual swap — both of you are looking"));
+        mutualSwaps.slice(0, 5).forEach(function (sw, i) { root.appendChild(swapCard(sw, i === 0)); });
+      }
 
-    if (res.coverOnly.length) {
-      root.appendChild(el("h3", "res-h", "Could cover (no return shift)"));
-      res.coverOnly.slice(0, 6).forEach(function (c) { root.appendChild(coverCard(c)); });
+      if (otherSwaps.length) {
+        root.appendChild(el("h3", "res-h", mutualSwaps.length ? "Other direct swaps" : "Direct swaps"));
+        otherSwaps.slice(0, 8).forEach(function (sw, i) { root.appendChild(swapCard(sw, i === 0 && !mutualSwaps.length)); });
+      }
+
+      if (!res.swaps.length) {
+        if (res.chains && res.chains.length) {
+          var n0 = el("div", "card note");
+          n0.appendChild(el("strong", null, "No direct two-way swap available."));
+          n0.appendChild(el("p", null, "Try one of the three-way swaps below — the loop closes so everyone keeps the same number of on-calls."));
+          root.appendChild(n0);
+        } else {
+          var none = el("div", "card note");
+          none.appendChild(el("strong", null, "No clean swap found."));
+          none.appendChild(el("p", null, "Nobody can take all the days you've selected and hand back an equivalent shift. The people below could cover your shift — your rota team can arrange a return manually."));
+          root.appendChild(none);
+        }
+      }
+
+      if (res.chains && res.chains.length) {
+        root.appendChild(el("h3", "res-h", "Three-way swaps"));
+        res.chains.slice(0, 5).forEach(function (ch, i) { root.appendChild(chainCard(ch, !res.swaps.length && i === 0)); });
+      }
+
+      if (res.coverOnly.length) {
+        root.appendChild(el("h3", "res-h", "Could cover (no return shift)"));
+        res.coverOnly.slice(0, 6).forEach(function (c) { root.appendChild(coverCard(c)); });
+      }
     }
 
     var det = el("details", "why");
@@ -1113,6 +1276,47 @@
       c.appendChild(row);
     });
     return c;
+  }
+
+  // Renders a section per requested block when multiple blocks were selected.
+  // Each section shows that block plus its own ranked partners.
+  function perBlockSection(pb) {
+    var wrap = el("div", "perblock");
+    var header = el("div", "perblock-header");
+    var label = el("div", "perblock-label");
+    label.appendChild(el("span", "perblock-kicker", "Block"));
+    pb.block.idxs.forEach(function (i) {
+      var p = el("span", "perblock-pill");
+      p.appendChild(chip(engine.cell(state.person, i).v));
+      p.appendChild(el("span", null, fmtShort(data.dates[i].iso)));
+      label.appendChild(p);
+    });
+    header.appendChild(label);
+    wrap.appendChild(header);
+
+    var mutuals = pb.swaps.filter(function (s) { return s.mutual; });
+    var others = pb.swaps.filter(function (s) { return !s.mutual; });
+
+    if (mutuals.length) {
+      mutuals.slice(0, 3).forEach(function (sw, i) { wrap.appendChild(swapCard(sw, i === 0)); });
+    }
+    if (others.length) {
+      others.slice(0, 5).forEach(function (sw, i) {
+        wrap.appendChild(swapCard(sw, !mutuals.length && i === 0));
+      });
+    }
+    if (!pb.swaps.length) {
+      if (pb.chains && pb.chains.length) {
+        wrap.appendChild(el("p", "perblock-note", "No direct two-way swap for this block — see three-way options below."));
+        pb.chains.slice(0, 3).forEach(function (ch, i) { wrap.appendChild(chainCard(ch, i === 0)); });
+      } else if (pb.coverOnly && pb.coverOnly.length) {
+        wrap.appendChild(el("p", "perblock-note", "No clean swap — these people could cover but with no return shift."));
+        pb.coverOnly.slice(0, 3).forEach(function (c) { wrap.appendChild(coverCard(c)); });
+      } else {
+        wrap.appendChild(el("p", "perblock-note", "No match found for this block."));
+      }
+    }
+    return wrap;
   }
 
   function datesLine(idxs) { return idxs.map(function (i) { return fmt(data.dates[i].iso, data.dates[i].dow); }).join(" · "); }
@@ -1345,6 +1549,7 @@
     $("#email-body").value = draft.body;
     $("#email-to").value = draft.to;
     $("#email-modal").dataset.kind = kind;
+    $("#email-modal")._opts = opts;
     $("#email-modal").classList.add("open");
     $("#email-modal-title").textContent = kind === "ask" ? "Email to the other doctor" : "Email to the rota team";
     document.body.style.overflow = "hidden";
@@ -1365,8 +1570,28 @@
     var to = encodeURIComponent($("#email-to").value || "");
     var subject = encodeURIComponent($("#email-subject").value);
     var body = encodeURIComponent($("#email-body").value);
-    if ($("#email-modal").dataset.kind === "confirm" && $("#email-to").value) {
+    var kind = $("#email-modal").dataset.kind;
+    if (kind === "confirm" && $("#email-to").value) {
       try { localStorage.setItem("rds_rota_email", $("#email-to").value); state.rotaTeamEmail = $("#email-to").value; } catch (e) {}
+    }
+    // Audit log: who drafted what email
+    if (state.person) {
+      var opts = $("#email-modal")._opts || {};
+      var dates = [];
+      if (opts.assignments) {
+        opts.assignments.forEach(function (a) {
+          a.rb.idxs.forEach(function (i) { dates.push(data.dates[i].iso); });
+        });
+      } else if (opts.chain) {
+        opts.chain.rb.idxs.forEach(function (i) { dates.push(data.dates[i].iso); });
+      }
+      Store.logEvent({
+        slot: state.person,
+        action: kind === "ask" ? "draft_ask_email" : "draft_rota_email",
+        partnerSlot: opts.partnerLabel || (opts.chain && opts.chain.C && opts.chain.C.label) || null,
+        dates: dates,
+        kind: opts.kind || (opts.chain ? "chain" : "direct")
+      });
     }
     window.location.href = "mailto:" + to + "?subject=" + subject + "&body=" + body;
   });
@@ -1391,10 +1616,255 @@
     document.body.style.overflow = "";
   }});
 
+  // ---- PIN-based login (per-slot, 4 digits, salted-hashed) ----------------
+  function sha256Hex(s) {
+    return crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)).then(function (buf) {
+      return Array.from(new Uint8Array(buf)).map(function (b) { return b.toString(16).padStart(2, "0"); }).join("");
+    });
+  }
+  function pinHashFor(slot, pin) { return sha256Hex("rds:" + slot + ":" + pin); }
+
+  function openPinModal() {
+    if (!state.person) return;
+    var slot = state.person;
+    if (state.verifiedSlot === slot) return; // already verified this session
+
+    // Already remembered on this device?
+    try {
+      var rem = localStorage.getItem("rds_verified_" + slot);
+      if (rem === "1") {
+        state.verifiedSlot = slot;
+        renderLoginBadge();
+        return;
+      }
+    } catch (e) {}
+
+    var entry = allPrefs[slot] || {};
+    var firstTime = !entry.pinHash;
+    var m = $("#pin-modal");
+    $("#pin-modal-title").textContent = firstTime
+      ? "Set a PIN for Slot " + slot
+      : "PIN for Slot " + slot;
+    $("#pin-help").textContent = firstTime
+      ? "Pick a 4-digit PIN. You'll enter it next time you use this slot on a new device."
+      : "Enter the 4-digit PIN you set for this slot.";
+    $("#pin-input").value = "";
+    $("#pin-confirm").value = "";
+    $("#pin-confirm-row").classList.toggle("hide", !firstTime);
+    $("#pin-msg").textContent = "";
+    $("#pin-submit").textContent = firstTime ? "Set PIN" : "Log in";
+    m._firstTime = firstTime;
+    m.classList.add("open");
+    document.body.style.overflow = "hidden";
+    setTimeout(function () { $("#pin-input").focus(); }, 100);
+  }
+  function closePinModal() {
+    $("#pin-modal").classList.remove("open");
+    document.body.style.overflow = "";
+  }
+  function pinError(msg) {
+    var n = $("#pin-msg"); n.textContent = msg;
+  }
+
+  if ($("#pin-modal")) {
+    $("#pin-cancel").addEventListener("click", function () {
+      // Cancel: reset person picker so they can re-pick. They can browse but
+      // actions are gated.
+      closePinModal();
+    });
+    $("#pin-modal").addEventListener("click", function (e) {
+      if (e.target === $("#pin-modal")) closePinModal();
+    });
+    $("#pin-submit").addEventListener("click", function () { handlePinSubmit(); });
+    $("#pin-input").addEventListener("keydown", function (e) {
+      if (e.key === "Enter") handlePinSubmit();
+    });
+    $("#pin-confirm").addEventListener("keydown", function (e) {
+      if (e.key === "Enter") handlePinSubmit();
+    });
+  }
+
+  function handlePinSubmit() {
+    var m = $("#pin-modal");
+    var slot = state.person; if (!slot) return;
+    var pin = ($("#pin-input").value || "").trim();
+    if (!/^\d{4}$/.test(pin)) { pinError("PIN must be 4 digits."); return; }
+    if (m._firstTime) {
+      var confirm = ($("#pin-confirm").value || "").trim();
+      if (pin !== confirm) { pinError("PINs don't match."); return; }
+      $("#pin-submit").disabled = true;
+      pinHashFor(slot, pin).then(function (hash) {
+        return Store.setPin(slot, hash).then(function (ok) {
+          $("#pin-submit").disabled = false;
+          if (!ok && !Store.shared) {
+            // Backend unreachable — keep the local cache but warn the user
+            pinError("PIN saved locally — shared store unreachable, PIN won't transfer to other devices.");
+          }
+          // Update local prefs cache
+          allPrefs[slot] = allPrefs[slot] || {};
+          allPrefs[slot].pinHash = hash;
+          rebuildPrefsMap();
+          state.verifiedSlot = slot;
+          try { localStorage.setItem("rds_verified_" + slot, "1"); } catch (e) {}
+          Store.logEvent({ slot: slot, action: "pin_set" });
+          Store.logEvent({ slot: slot, action: "login" });
+          closePinModal();
+          renderLoginBadge();
+          renderAdminBanner();
+        });
+      });
+    } else {
+      // Verify against stored hash
+      $("#pin-submit").disabled = true;
+      pinHashFor(slot, pin).then(function (hash) {
+        $("#pin-submit").disabled = false;
+        var entry = allPrefs[slot] || {};
+        if (entry.pinHash && entry.pinHash === hash) {
+          state.verifiedSlot = slot;
+          try { localStorage.setItem("rds_verified_" + slot, "1"); } catch (e) {}
+          Store.logEvent({ slot: slot, action: "login" });
+          closePinModal();
+          renderLoginBadge();
+          renderAdminBanner();
+        } else {
+          pinError("Wrong PIN. If you've forgotten it, contact your rota team to reset.");
+        }
+      });
+    }
+  }
+
+  function renderLoginBadge() {
+    var el0 = $("#login-badge"); if (!el0) return;
+    if (!state.person) { el0.classList.add("hide"); return; }
+    el0.classList.remove("hide");
+    el0.innerHTML = "";
+    var dot = el("span", "login-dot");
+    el0.appendChild(dot);
+    if (state.verifiedSlot === state.person) {
+      el0.className = "login-badge";
+      el0.appendChild(el("span", null, "Slot " + state.person + " · verified"));
+      var btn = el("button", null, "Log out");
+      btn.addEventListener("click", function () {
+        try { localStorage.removeItem("rds_verified_" + state.person); } catch (e) {}
+        state.verifiedSlot = null;
+        Store.logEvent({ slot: state.person, action: "logout" });
+        renderLoginBadge();
+      });
+      el0.appendChild(btn);
+    } else {
+      el0.className = "login-badge unverified";
+      el0.appendChild(el("span", null, "Slot " + state.person + " · not verified"));
+      var bv = el("button", null, "Log in");
+      bv.addEventListener("click", openPinModal);
+      el0.appendChild(bv);
+    }
+  }
+
+  // ---- admin mode (URL flag) ----------------------------------------------
+  state.admin = new URLSearchParams(window.location.search).get("admin") === "1";
+
+  function renderAdminBanner() {
+    var wrap = $("#admin-banner"); if (!wrap) return;
+    if (!state.admin) { wrap.classList.add("hide"); return; }
+    wrap.classList.remove("hide");
+    var todayIso = isoFromDate(new Date());
+    var endIso = data.dateEnd;
+    var daysLeft = Math.round((new Date(endIso + "T00:00:00") - new Date(todayIso + "T00:00:00")) / 86400000);
+
+    // Stats
+    var distinctVerified = {};
+    Store.auditLog.forEach(function (e) { if (e.action === "login") distinctVerified[e.slot] = 1; });
+    var distinctActed = {};
+    Store.auditLog.forEach(function (e) { if (e.action === "draft_rota_email" || e.action === "draft_ask_email") distinctActed[e.slot] = 1; });
+
+    wrap.innerHTML = "";
+    wrap.appendChild(el("div", "step-num", "Admin"));
+    wrap.appendChild(el("div", "admin-title", "Rota administration"));
+    var body = el("div", "admin-body");
+    if (daysLeft < 0) body.appendChild(el("p", null, "This rota ended " + (-daysLeft) + " days ago. Drop in the new spreadsheet to refresh data.js."));
+    else if (daysLeft <= 28) body.appendChild(el("p", null, "This rota ends in " + daysLeft + " days. Time to ask for the next one."));
+    else body.appendChild(el("p", null, "Rota ends " + fmt(endIso) + " (" + daysLeft + " days away)."));
+    wrap.appendChild(body);
+
+    var stats = el("div", "admin-stats");
+    function addStat(num, label) {
+      var s = el("div", "admin-stat");
+      s.appendChild(el("strong", null, String(num)));
+      s.appendChild(el("span", null, label));
+      stats.appendChild(s);
+    }
+    addStat(Object.keys(distinctVerified).length, "Verified slots");
+    addStat(Object.keys(distinctActed).length, "Active swappers");
+    addStat(Store.auditLog.length, "Events logged");
+    wrap.appendChild(stats);
+
+    var auditBtn = el("button", "admin-btn", "View audit log");
+    auditBtn.addEventListener("click", function () { openAuditModal(); });
+    wrap.appendChild(auditBtn);
+  }
+
+  function openAuditModal() {
+    var m = $("#audit-modal"); if (!m) return;
+    var list = $("#audit-list"); list.innerHTML = "";
+    var entries = Store.auditLog.slice(0, 200);
+    if (!entries.length) {
+      list.appendChild(el("p", "empty", "No audit events recorded yet."));
+    } else {
+      entries.forEach(function (e) {
+        var row = el("div", "audit-row");
+        row.appendChild(el("span", "audit-time", fmtAuditTime(e.ts)));
+        row.appendChild(el("span", "audit-slot", "Slot " + e.slot));
+        row.appendChild(el("span", "audit-action", actionLabel(e.action)));
+        if (e.partnerSlot) row.appendChild(el("span", null, "↔ Slot " + e.partnerSlot));
+        if (e.dates && e.dates.length) {
+          var d = el("span", null, e.dates.map(function (x) { return fmtShort(x); }).join(", "));
+          d.style.color = "var(--muted)"; d.style.fontSize = ".78rem";
+          row.appendChild(d);
+        }
+        list.appendChild(row);
+      });
+    }
+    m.classList.add("open");
+    document.body.style.overflow = "hidden";
+  }
+  function actionLabel(a) {
+    var m = {
+      login: "logged in",
+      logout: "logged out",
+      pin_set: "set PIN",
+      publish_wanted: "published wanted-off",
+      clear_wanted: "cleared wanted-off",
+      draft_ask_email: "drafted partner email",
+      draft_rota_email: "drafted rota email"
+    };
+    return m[a] || a;
+  }
+  function fmtAuditTime(iso) {
+    if (!iso) return "";
+    var d = new Date(iso);
+    return d.toLocaleDateString("en-GB", { day: "numeric", month: "short" })
+      + " " + d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  }
+
+  if ($("#audit-close")) {
+    $("#audit-close").addEventListener("click", function () {
+      $("#audit-modal").classList.remove("open");
+      document.body.style.overflow = "";
+    });
+    $("#audit-modal").addEventListener("click", function (e) {
+      if (e.target === $("#audit-modal")) {
+        $("#audit-modal").classList.remove("open");
+        document.body.style.overflow = "";
+      }
+    });
+  }
+
   // ---- footer / init ------------------------------------------------------
   $("#rota-range").textContent = fmt(data.dateStart) + " – " + fmt(data.dateEnd);
+  renderAdminBanner();
   Store.loadAll().then(function (j) {
     allPrefs = j || {}; rebuildPrefsMap();
     if (state.person) { seedUnavailFromPrefs(); }
+    renderAdminBanner();
   });
 })(typeof window !== "undefined" ? window : globalThis);

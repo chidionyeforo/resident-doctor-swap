@@ -370,6 +370,121 @@
     font-family:var(--mono);font-size:.72rem;letter-spacing:.14em;text-transform:uppercase;
     color:var(--coral-dark);margin:28px 4px 8px;font-weight:600;
   }
+  .res-subh{
+    font-family:var(--mono);font-size:.7rem;letter-spacing:.12em;text-transform:uppercase;
+    color:var(--muted);margin:18px 4px 6px;font-weight:600;
+  }
+  .perblock-intro{
+    margin:0 4px 14px;color:var(--ink-soft);font-size:.88rem;line-height:1.45;
+  }
+
+  /* Per-block sections (multi-block selections) */
+  .perblock{
+    margin:18px 0;padding:18px 18px 14px;
+    background:var(--paper-warm);border:1px solid var(--line);border-radius:var(--radius-lg);
+  }
+  .perblock-header{margin-bottom:14px;padding-bottom:12px;border-bottom:1.5px dashed var(--line)}
+  .perblock-label{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .perblock-kicker{
+    font-family:var(--mono);font-size:.66rem;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--coral-dark);font-weight:700;
+  }
+  .perblock-pill{
+    display:inline-flex;align-items:center;gap:6px;
+    background:#fff;border:1px solid var(--line-soft);border-radius:6px;
+    padding:5px 9px;font-size:.85rem;font-weight:500;
+  }
+  .perblock-note{
+    color:var(--muted);font-size:.85rem;margin:8px 4px;font-style:italic;
+  }
+  .perblock .card{box-shadow:var(--shadow-sm)}
+
+  .combined-fallback{
+    margin:22px 0 8px;
+    background:#fff;border:1px solid var(--line-soft);border-radius:var(--radius);
+    padding:0 16px;
+  }
+  .combined-fallback summary{
+    cursor:pointer;padding:14px 0;list-style:none;
+    font-family:var(--display);font-weight:600;font-size:.92rem;color:var(--ink-soft);
+  }
+  .combined-fallback summary::-webkit-details-marker{display:none}
+  .combined-fallback summary::before{content:"▸ ";color:var(--coral);font-size:.85rem}
+  .combined-fallback[open] summary::before{content:"▾ "}
+  .combined-fallback[open]{padding-bottom:16px}
+
+  /* Shift class filter chips above the shift list */
+  .shift-filter{
+    display:flex;gap:6px;margin:0 0 14px;flex-wrap:wrap;
+  }
+  .filter-chip{
+    font-family:var(--display);font-weight:600;font-size:.78rem;
+    background:#fff;border:1.5px solid var(--line);color:var(--ink-soft);
+    border-radius:999px;padding:6px 13px;cursor:pointer;
+    transition:border-color .12s,background .12s,color .12s;
+  }
+  .filter-chip:hover{border-color:var(--teal);color:var(--teal-dark)}
+  .filter-chip.active{
+    background:var(--ink);color:#fff;border-color:var(--ink);
+  }
+  .filter-chip-count{
+    font-family:var(--mono);font-size:.68rem;opacity:.7;margin-left:5px;font-weight:500;
+  }
+
+  /* Login (PIN) badge in header + admin banner */
+  .login-badge{
+    display:inline-flex;align-items:center;gap:7px;
+    background:var(--teal-wash);color:var(--teal-dark);
+    border:1px solid var(--teal-tint);border-radius:7px;
+    padding:6px 12px;font-family:var(--mono);font-size:.74rem;font-weight:600;
+    letter-spacing:.02em;
+  }
+  .login-badge.unverified{background:#fff;color:var(--muted);border-color:var(--line)}
+  .login-badge button{
+    border:none;background:none;cursor:pointer;font:inherit;color:inherit;
+    text-decoration:underline;padding:0;
+  }
+  .login-dot{width:8px;height:8px;border-radius:50%;background:var(--ok);flex:0 0 auto}
+  .login-badge.unverified .login-dot{background:var(--muted)}
+
+  .admin-banner{
+    background:linear-gradient(135deg,#3a4a4f 0%,var(--ink) 100%);
+    color:#fff;border:none;
+    padding:18px 22px;margin:14px 0;
+  }
+  .admin-banner .step-num{color:#f6b58a}
+  .admin-banner .admin-title{
+    font-family:var(--display);font-weight:700;font-size:1.05rem;
+    margin:4px 0 8px;letter-spacing:-.015em;
+  }
+  .admin-banner .admin-body{font-size:.85rem;color:#d8d3c8;line-height:1.55}
+  .admin-banner .admin-stats{
+    display:flex;gap:18px;margin:14px 0;flex-wrap:wrap;
+  }
+  .admin-stat{font-family:var(--mono);font-size:.82rem}
+  .admin-stat strong{display:block;font-size:1.5rem;color:#fff;font-weight:700}
+  .admin-stat span{color:#a8a39a;font-size:.7rem;letter-spacing:.08em;text-transform:uppercase}
+  .admin-banner button.admin-btn{
+    background:#fff;color:var(--ink);border:none;
+    font-family:var(--display);font-weight:600;font-size:.85rem;
+    border-radius:var(--radius-sm);padding:9px 16px;cursor:pointer;margin-right:8px;
+  }
+  .admin-banner button.admin-btn:hover{background:#f4efe6}
+
+  /* Audit log list (admin only) */
+  .audit-list{
+    max-height:400px;overflow-y:auto;margin-top:14px;
+    background:#fff;border-radius:var(--radius-sm);padding:6px;
+  }
+  .audit-row{
+    display:flex;gap:10px;align-items:center;padding:8px 10px;
+    border-bottom:1px solid var(--line-soft);font-size:.82rem;color:var(--ink);
+  }
+  .audit-row:last-child{border-bottom:none}
+  .audit-time{font-family:var(--mono);font-size:.72rem;color:var(--muted);flex:0 0 auto}
+  .audit-action{font-weight:600;color:var(--teal-dark)}
+  .audit-slot{font-family:var(--mono);font-weight:600;color:var(--ink)}
+
   .summary{background:var(--ink);color:#fff;border-color:var(--ink)}
   .summary .kicker{
     font-family:var(--mono);font-size:.7rem;letter-spacing:.16em;
@@ -657,6 +772,8 @@
     <button id="help-open" class="help-btn" aria-label="Help">?</button>
   </header>
 
+  <section class="card admin-banner hide" id="admin-banner" aria-live="polite"></section>
+
   <section class="card" id="person-card">
     <div class="step-num">Step 1</div>
     <div class="step-h">Who are you?</div>
@@ -666,6 +783,7 @@
       <option value="">Select your slot…</option>
     </select>
     <div id="person-meta"></div>
+    <div id="login-badge" class="login-badge unverified hide" style="margin-top:12px"></div>
   </section>
 
   <section id="mutual-banner" class="card mutual-banner hide" aria-live="polite"></section>
@@ -675,6 +793,7 @@
     <div class="step-h">Which shifts do you want off?</div>
     <p class="step-help">These are your swappable on-call shifts. Tap any to mark for swap. Night blocks swap as a whole.</p>
     <div id="looking-status" class="hide"></div>
+    <div id="shift-filter" class="shift-filter hide" role="tablist" aria-label="Filter shifts by type"></div>
     <div id="shifts"></div>
   </section>
 
@@ -724,7 +843,7 @@
 
   <section id="results"></section>
 
-  <footer>The rota team makes all swaps official. Always confirm. <span class="footer-ver">v1.1.0</span></footer>
+  <footer>The rota team makes all swaps official. Always confirm. <span class="footer-ver">v1.2.0</span></footer>
 </div>
 
 <!-- HELP MODAL -->
@@ -750,6 +869,12 @@
 
       <h3>Your availability</h3>
       <p>Flag dates you can’t take a swap onto in step 3. These save automatically and are visible to anyone else using the shop, so they won’t suggest you on those days. Edit them whenever your plans change.</p>
+
+      <h3>Your PIN</h3>
+      <p>Each slot has its own 4-digit PIN. The first time you pick your slot, you set the PIN; on this device you'll stay logged in. If you switch device or browser, enter the same PIN to confirm it's you. Forgot it? Your rota team can reset it.</p>
+
+      <h3>Picking multiple blocks</h3>
+      <p>When you select blocks across different weeks (say a Day on one week and Nights on another), the shop ranks partners for each block independently. People usually swap one block at a time with whoever fits — you don't need a single person to take everything.</p>
 
       <h3>Drafting the emails</h3>
       <p>Once a match looks good, use “Draft ask-them email” to message the other doctor — agreement usually happens offline. Once they’ve agreed, use “Draft rota-team email” to send the formal swap request. Each email opens in a draft you can edit before sending.</p>
@@ -789,6 +914,49 @@
       <button class="btn-cancel" id="email-copy" type="button">Copy text</button>
       <button class="btn-primary" id="email-open" type="button">Open in email app</button>
     </div>
+  </div>
+</div>
+
+<!-- PIN MODAL -->
+<div class="modal" id="pin-modal" role="dialog" aria-labelledby="pin-modal-title" aria-modal="true">
+  <div class="modal-card">
+    <div class="modal-head">
+      <div>
+        <div class="modal-eyebrow">Login</div>
+        <h2 class="modal-title" id="pin-modal-title">PIN</h2>
+      </div>
+    </div>
+    <p class="step-help" id="pin-help" style="margin-bottom:14px"></p>
+    <div class="email-fields">
+      <div>
+        <label class="fld" for="pin-input">PIN</label>
+        <input type="password" id="pin-input" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="off" />
+      </div>
+      <div id="pin-confirm-row" class="hide">
+        <label class="fld" for="pin-confirm">Confirm PIN</label>
+        <input type="password" id="pin-confirm" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="off" />
+      </div>
+      <p id="pin-msg" style="font-size:.84rem;color:var(--coral-dark);margin:0;min-height:1.2em"></p>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-cancel" id="pin-cancel" type="button">Browse only</button>
+      <button class="btn-primary" id="pin-submit" type="button">Log in</button>
+    </div>
+  </div>
+</div>
+
+<!-- AUDIT MODAL (admin only) -->
+<div class="modal" id="audit-modal" role="dialog" aria-labelledby="audit-modal-title" aria-modal="true">
+  <div class="modal-card">
+    <div class="modal-head">
+      <div>
+        <div class="modal-eyebrow">Admin</div>
+        <h2 class="modal-title" id="audit-modal-title">Audit log</h2>
+      </div>
+      <button class="modal-close" id="audit-close" aria-label="Close">✕</button>
+    </div>
+    <p class="step-help" style="margin-bottom:14px">Most recent first. Each entry shows who did what when.</p>
+    <div id="audit-list" class="audit-list"></div>
   </div>
 </div>
 
