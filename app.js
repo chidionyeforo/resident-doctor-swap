@@ -229,6 +229,137 @@
          + Math.abs(a.offAfter - b.offAfter)
          + Math.abs(a.len - b.len) * 0.5;
   }
+
+  // ---- merged-schedule placement validator --------------------------------
+  // The critical safety layer. Checks whether `label` can legally hold the
+  // schedule that results from ADDING the shifts in addList ([{idx, cls}])
+  // and REMOVING the days in removeIdxs (a block they are giving away).
+  // Validates the WHOLE merged schedule, not days in isolation, so a swap
+  // can never create back-to-back on-call blocks that eat required rest.
+  //
+  // Hard rules (from the rota's working pattern):
+  //  - A contiguous on-call run containing nights must be nights only —
+  //    nights always have a rest day before and can't butt against other shifts.
+  //  - Night runs are max 4, and need 2 clear days after (46h rest).
+  //  - Weekend ward blocks (runs containing WARD) need 2 clear days after,
+  //    a clear day immediately before, and a clear day 2 days before
+  //    (unless that day is the person's LTFT day, when 1 day before suffices).
+  // Soft rules (allowed, but warned and deprioritised):
+  //  - New back-to-back on-call adjacency (e.g. day shift next to a day shift).
+  //  - Working back-to-back weekends.
+  //  - Another on-call in the same week (penalty only, no warning).
+  Engine.prototype.assessPlacement = function (label, addList, removeIdxs, pref) {
+    var self = this;
+    var reasons = [], warnings = [], penalty = 0;
+
+    // Per-day gate first (unavailability, LTFT, blocked, 48h post-nights…)
+    for (var q = 0; q < addList.length; q++) {
+      var f = this.freeToWork(label, addList[q].idx, pref, addList[q].cls);
+      if (!f.ok) return { ok: false, reasons: ["can't take " + this.data.dates[addList[q].idx].iso + ": " + f.reason], warnings: [], penalty: 0 };
+    }
+
+    // Build the merged on-call map idx -> class
+    var merged = {}, g = this.data.grid[label] || [];
+    g.forEach(function (c, i) { if (c.s === "OC") merged[i] = shiftClass(c.v); });
+    (removeIdxs || []).forEach(function (i) { delete merged[i]; });
+    var addSet = {};
+    addList.forEach(function (a) { merged[a.idx] = a.cls; addSet[a.idx] = 1; });
+
+    // Contiguous runs over the merged schedule
+    var idxs = Object.keys(merged).map(Number).sort(function (a, b) { return a - b; });
+    var runs = [], cur = null;
+    idxs.forEach(function (i) {
+      if (cur && i === cur.end + 1) { cur.end = i; cur.days.push(i); }
+      else { cur = { start: i, end: i, days: [i] }; runs.push(cur); }
+    });
+
+    for (var r = 0; r < runs.length; r++) {
+      var run = runs[r];
+      // Only validate runs the swap actually touches (adds inside or adjacent);
+      // pre-existing rota quirks aren't this swap's problem.
+      var touched = run.days.some(function (i) { return addSet[i]; });
+      if (!touched) continue;
+
+      var classes = {}; run.days.forEach(function (i) { classes[merged[i]] = 1; });
+      var hasNight = !!classes.NIGHT, hasWard = !!classes.WARD;
+
+      if (hasNight) {
+        if (Object.keys(classes).length > 1) {
+          return { ok: false, reasons: ["would create on-call shifts immediately next to a night block — nights always need a rest day before and 46h rest after"], warnings: [], penalty: 0 };
+        }
+        if (run.days.length > 4) {
+          return { ok: false, reasons: ["would mean more than 4 nights in a row"], warnings: [], penalty: 0 };
+        }
+        if (merged[run.end + 2] != null) {
+          return { ok: false, reasons: ["less than 46h rest after the night block ending " + this.data.dates[run.end].iso], warnings: [], penalty: 0 };
+        }
+      }
+
+      if (hasWard) {
+        if (merged[run.end + 2] != null) {
+          return { ok: false, reasons: ["weekend block needs two rest days after it — there's an on-call on " + this.data.dates[run.end + 2].iso], warnings: [], penalty: 0 };
+        }
+        // Rest day 2 days before block start (1 day before if the 2-days-before is their LTFT day)
+        var pre2 = run.start - 2;
+        if (pre2 >= 0 && merged[pre2] != null && this.cell(label, pre2).s !== "LTFT") {
+          return { ok: false, reasons: ["weekend block needs a rest day two days before it — there's an on-call on " + this.data.dates[pre2].iso], warnings: [], penalty: 0 };
+        }
+      }
+    }
+
+    // Soft: new adjacency created by the added days (legal classes only reach here)
+    var adjacencyWarned = false;
+    addList.forEach(function (a) {
+      [a.idx - 1, a.idx + 1].forEach(function (n) {
+        if (merged[n] != null && !addSet[n] && !adjacencyWarned) {
+          warnings.push("This would mean back-to-back on-call shifts (" + self.data.dates[Math.min(a.idx, n)].iso + " and " + self.data.dates[Math.max(a.idx, n)].iso + ")");
+          penalty += 5;
+          adjacencyWarned = true;
+        }
+      });
+    });
+
+    // Soft: back-to-back weekends
+    function weekendOf(i) {
+      // returns index of the Saturday of the weekend containing i, or null
+      var d = self.data.dates[i]; if (!d) return null;
+      if (d.dow === "Sat") return i;
+      if (d.dow === "Sun") return i - 1;
+      return null;
+    }
+    var addedWkndSats = {};
+    addList.forEach(function (a) { var w = weekendOf(a.idx); if (w != null) addedWkndSats[w] = 1; });
+    var wkndWarned = false;
+    Object.keys(addedWkndSats).map(Number).forEach(function (sat) {
+      if (wkndWarned) return;
+      [sat - 7, sat + 7].forEach(function (adjSat) {
+        if (wkndWarned) return;
+        // any on-call in the merged schedule on the adjacent weekend?
+        if (merged[adjSat] != null || merged[adjSat + 1] != null) {
+          warnings.push("This would mean working back-to-back weekends");
+          penalty += 4;
+          wkndWarned = true;
+        }
+      });
+    });
+
+    // Soft: another on-call in the same working week (Mon–Sun), penalty only
+    function weekKey(i) {
+      var d = new Date(self.data.dates[i].iso + "T00:00:00");
+      var day = (d.getDay() + 6) % 7; // Mon=0
+      d.setDate(d.getDate() - day);
+      return d.toISOString().slice(0, 10);
+    }
+    var addedWeeks = {}; addList.forEach(function (a) { addedWeeks[weekKey(a.idx)] = 1; });
+    var sameWeekHit = false;
+    idxs.forEach(function (i) {
+      if (addSet[i] || sameWeekHit) return;
+      if (addedWeeks[weekKey(i)]) { penalty += 2; sameWeekHit = true; }
+    });
+
+    return { ok: true, reasons: reasons, warnings: warnings, penalty: penalty };
+  };
+
   function restMatches(a, b) {
     return a.restBeforeIdxs.length === b.restBeforeIdxs.length
         && a.restAfterIdxs.length === b.restAfterIdxs.length;
@@ -259,10 +390,12 @@
     var self = this;
     var sel = {}; selIdxs.forEach(function (i) { sel[i] = 1; });
     var reqBlocks = this.groupBlocks(reqLabel, selIdxs);
-    var selNight = {}; selIdxs.forEach(function (i) { if (shiftClass(self.cell(reqLabel, i).v) === "NIGHT") selNight[i] = 1; });
     var myWanted = (prefs[reqLabel] || {}).wantedOff || {};
 
     var swaps = [], coverOnly = [], ineligible = [];
+
+    // The selected days as an addList (idx + class from the requester's grid)
+    var selAdd = selIdxs.map(function (i) { return { idx: i, cls: shiftClass(self.cell(reqLabel, i).v) }; });
 
     this.data.staff.forEach(function (C) {
       if (!C.candidate || C.label === reqLabel) return;
@@ -271,19 +404,12 @@
       var cWanted = (prefs[cl] || {}).wantedOff || null;
       var warnings = [], reasons = [];
 
-      // INCOMING: can C take every selected day?
-      var incomingOk = true;
-      selIdxs.forEach(function (i) {
-        var sCls = shiftClass(self.cell(reqLabel, i).v);
-        var f = self.freeToWork(cl, i, cPref, sCls);
-        if (!f.ok) { incomingOk = false; reasons.push("can't take " + self.data.dates[i].iso + ": " + f.reason); }
-      });
-      if (incomingOk && Object.keys(selNight).length) {
-        var cn = self._nightSet(cl);
-        Object.keys(selNight).forEach(function (i) { cn[i] = 1; });
-        if (maxRun(cn) > 4) { incomingOk = false; reasons.push("would exceed 4 nights in a row by taking these nights"); }
-      }
-      if (!incomingOk) { ineligible.push({ label: C.label, reasons: reasons }); return; }
+      // INCOMING gate: could C take the selected days at all (cover-only case,
+      // giving nothing away)? Full merged-schedule check — this is what
+      // prevents e.g. handing someone a weekend ward right before their own
+      // night block.
+      var coverAssess = self.assessPlacement(cl, selAdd, [], cPref);
+      if (!coverAssess.ok) { ineligible.push({ label: C.label, reasons: coverAssess.reasons }); return; }
 
       // RETURN: a compatible shift from C the requester can take
       var cBlocks = self.groupBlocks(cl, self.oncallShifts(cl).map(function (s) { return s.idx; }))
@@ -291,39 +417,40 @@
       var assignments = [], allMatched = true;
 
       reqBlocks.forEach(function (rb) {
+        var rbAdd = rb.idxs.map(function (i) { return { idx: i, cls: shiftClass(self.cell(reqLabel, i).v) }; });
         var best = null;
         cBlocks.forEach(function (cb) {
           if (cb.used || cb.cls !== rb.cls) return;
-          var rOk = true;
-          cb.idxs.forEach(function (i) {
-            if (unavail[i]) { rOk = false; return; }
-            var f = self.freeToWork(reqLabel, i, null, cb.cls);
-            if (!f.ok) rOk = false;
-          });
-          if (!rOk) return;
-          // Bonus to equity if the requester has flagged THIS exact block as
-          // wanted-off — mutual desire on this leg is a near-perfect match.
-          var sc = equity(rb, cb);
+          if (cb.idxs.some(function (i) { return unavail[i]; })) return;
+
+          var cbAdd = cb.idxs.map(function (i) { return { idx: i, cls: shiftClass(self.cell(cl, i).v) }; });
+
+          // Requester side: their merged schedule after giving up ALL selected
+          // days and taking this return block.
+          var reqAssess = self.assessPlacement(reqLabel, cbAdd, selIdxs, null);
+          if (!reqAssess.ok) return;
+
+          // Candidate side: their merged schedule after taking this request
+          // block and giving away this return block.
+          var candAssess = self.assessPlacement(cl, rbAdd, cb.idxs, cPref);
+          if (!candAssess.ok) return;
+
+          var sc = equity(rb, cb) + reqAssess.penalty + candAssess.penalty;
           var mutualLeg = cb.idxs.some(function (i) { return myWanted[i]; });
           if (mutualLeg) sc -= 100; // dominate ordering
-          if (!best || sc < best.sc) best = { cb: cb, sc: sc, mutualLeg: mutualLeg };
+          if (!best || sc < best.sc) best = { cb: cb, sc: sc, mutualLeg: mutualLeg, warns: reqAssess.warnings.concat(candAssess.warnings) };
         });
-        if (best) { best.cb.used = true; assignments.push({ rb: rb, cb: best.cb, sc: best.sc, mutualLeg: best.mutualLeg }); }
+        if (best) { best.cb.used = true; assignments.push({ rb: rb, cb: best.cb, sc: best.sc, mutualLeg: best.mutualLeg, warns: best.warns }); }
         else allMatched = false;
       });
 
-      if (allMatched) {
-        var rn = self._nightSet(reqLabel);
-        Object.keys(selNight).forEach(function (i) { delete rn[i]; });
-        assignments.forEach(function (a) { if (a.rb.cls === "NIGHT") a.cb.idxs.forEach(function (i) { rn[i] = 1; }); });
-        if (maxRun(rn) > 4) { ineligible.push({ label: C.label, reasons: ["This swap would put you over 4 nights in a row"] }); return; }
-
+      if (allMatched && assignments.length) {
         var score = 0;
         // Did C also flag the requester's selected dates as their wanted-off?
-        // (mutual on the "they take your shift" leg)
         var cMutualOnReq = cWanted && selIdxs.some(function (i) { return cWanted[i]; });
         assignments.forEach(function (a) {
           score += a.sc;
+          (a.warns || []).forEach(function (w) { if (warnings.indexOf(w) < 0) warnings.push(w); });
           if (!restMatches(a.rb, a.cb)) {
             warnings.push("Rest days either side differ (" + a.rb.restBeforeIdxs.length + "/" + a.rb.restAfterIdxs.length +
               " vs " + a.cb.restBeforeIdxs.length + "/" + a.cb.restAfterIdxs.length + ") — the off days travel with the shift, so one of you changes rest");
@@ -338,7 +465,8 @@
         else if (mutual === "soft") score -= 50;
         swaps.push({ label: C.label, grade: C.grade, dept: C.dept, assignments: assignments, score: score, warnings: warnings, mutual: mutual });
       } else {
-        coverOnly.push({ label: C.label, grade: C.grade, dept: C.dept, warnings: warnings });
+        // Cover is legal (checked above) but no clean return shift exists.
+        coverOnly.push({ label: C.label, grade: C.grade, dept: C.dept, warnings: coverAssess.warnings || [] });
       }
     });
 
@@ -399,59 +527,61 @@
     return out;
   };
 
-  /* Three-way cyclic swap for a single request block. */
+  /* Three-way cyclic swap for a single request block. Each leg's merged
+     schedule is validated with assessPlacement, same as direct swaps. */
   Engine.prototype._findChains = function (reqLabel, rb, sel, unavail, prefs) {
     var self = this, K = rb.cls, out = [], seen = {};
-    var rbNights = nightIdxsOf(self, reqLabel, rb);
 
     function prefOf(l) { return (prefs[l] || {}).unavail || null; }
     function blocksOf(l) {
       return self.groupBlocks(l, self.oncallShifts(l).map(function (s) { return s.idx; }))
         .filter(function (b) { return b.cls === K; });
     }
-    function freeAll(l, block, pref, excludeSel) {
-      return block.idxs.every(function (i) {
-        if (excludeSel && sel[i]) return false;
-        return self.freeToWork(l, i, pref, block.cls).ok;
-      });
+    function addListOf(owner, block) {
+      return block.idxs.map(function (i) { return { idx: i, cls: shiftClass(self.cell(owner, i).v) }; });
     }
+    var rbAdd = addListOf(reqLabel, rb);
 
     this.data.staff.forEach(function (C) {
       if (!C.candidate || C.label === reqLabel) return;
       var cPref = prefOf(C.label);
-      if (!freeAll(C.label, rb, cPref, false)) return;
-      if (!self._nightRunOk(C.label, [], rbNights)) return;
 
       var cBlocks = blocksOf(C.label).filter(function (b) { return b.idxs.every(function (i) { return !sel[i]; }); });
 
       cBlocks.forEach(function (cb) {
-        var cbNights = nightIdxsOf(self, C.label, cb);
-        if (!self._nightRunOk(C.label, cbNights, rbNights)) return;
+        var cbAdd = addListOf(C.label, cb);
+        // C takes rb, gives cb — full merged check
+        var cAssess = self.assessPlacement(C.label, rbAdd, cb.idxs, cPref);
+        if (!cAssess.ok) return;
 
         self.data.staff.forEach(function (D) {
           if (!D.candidate || D.label === reqLabel || D.label === C.label) return;
           var dPref = prefOf(D.label);
-          if (!freeAll(D.label, cb, dPref, true)) return;
+          if (cb.idxs.some(function (i) { return sel[i]; })) return;
 
           var dBlocks = blocksOf(D.label).filter(function (b) {
             return b.idxs.every(function (i) { return !sel[i] && cb.idxs.indexOf(i) < 0; });
           });
 
           dBlocks.forEach(function (db) {
-            var dbNights = nightIdxsOf(self, D.label, db);
-            if (!self._nightRunOk(D.label, dbNights, cbNights)) return;
-            var youOk = db.idxs.every(function (i) {
-              if (unavail[i] || sel[i]) return false;
-              return self.freeToWork(reqLabel, i, null, db.cls).ok;
-            });
-            if (!youOk) return;
-            if (!self._nightRunOk(reqLabel, rbNights, dbNights)) return;
+            if (db.idxs.some(function (i) { return unavail[i] || sel[i]; })) return;
+            var dbAdd = addListOf(D.label, db);
+            // D takes cb, gives db
+            var dAssess = self.assessPlacement(D.label, cbAdd, db.idxs, dPref);
+            if (!dAssess.ok) return;
+            // Requester takes db, gives rb
+            var rAssess = self.assessPlacement(reqLabel, dbAdd, rb.idxs, null);
+            if (!rAssess.ok) return;
 
             var key = C.label + ">" + D.label + ":" + cb.start + ":" + db.start;
             if (seen[key]) return; seen[key] = 1;
 
-            var score = equity(rb, cb) + equity(cb, db) + equity(db, rb);
+            var score = equity(rb, cb) + equity(cb, db) + equity(db, rb)
+                      + cAssess.penalty + dAssess.penalty + rAssess.penalty;
             var warnings = [];
+            [cAssess, dAssess, rAssess].forEach(function (a) {
+              a.warnings.forEach(function (w) { if (warnings.indexOf(w) < 0) warnings.push(w); });
+            });
             if (!restMatches(rb, cb) || !restMatches(cb, db) || !restMatches(db, rb))
               warnings.push("Rest days either side aren't identical across all three — check the off days travel cleanly");
 
@@ -1204,13 +1334,8 @@
     var multi = res.perBlock && res.perBlock.length > 1;
 
     if (multi) {
-      // Per-block matching is the primary view. People most commonly swap
-      // one block at a time with whoever fits each block individually.
-      root.appendChild(el("h3", "res-h", "Swap each block independently"));
-      var intro = el("p", "perblock-intro",
-        "You can match a different person for each block — that's how most swaps work.");
-      root.appendChild(intro);
-
+      // Per-block matching is the primary view — no explainer needed,
+      // people know how swaps work.
       res.perBlock.forEach(function (pb) {
         root.appendChild(perBlockSection(pb));
       });

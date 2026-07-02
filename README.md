@@ -1,6 +1,6 @@
 # Resident Doctor Swap
 
-**Version 1.2.1** · Rota period 05 Aug 2026 – 02 Feb 2027
+**Version 1.3.0** · Rota period 05 Aug 2026 – 02 Feb 2027
 
 A small static web app that reads your SpR on-call rota and suggests the **best person to ask for a shift swap** when you want a day (or block of days) off.
 
@@ -10,10 +10,11 @@ The version number appears in the footer of the app itself so anyone using it ca
 
 ## Changelog
 
-- **v1.2.1** — 48-hour post-nights rule: a Day/Ward/E shift can't fall within 3 calendar days of a candidate's night shift (was allowing Thu N1 → Sat ward, ~22h gap). Calendar cells visually stable when selected (consistent 2px borders, tabular numerals, grid-centred dots). All displayed dates padded UK format (Mon 09 Nov 2026). Removed the "currently a day off — uses a rest day" warning (too noisy for normal off-day swaps). Removed the "Why others weren't suggested" tab. Step 2 wording cleaned up. Rest day counters reworded as "X rest day(s) before, Y rest day(s) after".
-- **v1.2.0** — Per-block independent matching (multi-block selection now ranks partners per block, "one person for everything" tucked into a collapsible fallback). Past shifts hidden from Step 2. Shift-class filter chips above the shift list. PIN-per-slot login with audit trail of every login, publish, and email draft. Admin mode (`?admin=1`) showing rota-end countdown, active-user stats, and audit log viewer. Version visible in footer.
-- **v1.1.0** — Mutual swap matching (shared "looking" list, opening banner, mutual-match ribbons). Multi-mode calendar picker for unavailable dates (tap individual days or tap a range). Confirmed weekends/BH don't travel as rest days; confirmed LTFT days are never swapped onto.
-- **v1.0.0** — Initial release. Like-for-like matching with rest days travelling. Shared unavailability store. Three-way swap fallback. Off-rota period detection (≥28-day gaps). Email drafting for both partner and rota team. Help modal in-app.
+- **v1.3.0** — **Merged-schedule validation (major safety layer).** Every proposed swap now validates the person's whole resulting schedule, not days in isolation. Hard rules: night blocks can never butt against other on-calls (rest day before, 46h / 2 clear days after); weekend ward blocks need 2 clear days after, a clear day before, and a rest day 2 days before (moves to 1 day before when that's the person's LTFT day); max 4 nights unchanged. This fixes a bug where a weekend ward could be offered immediately before someone's existing night block. Soft rules (allowed but warned and ranked lower): back-to-back on-call shifts, back-to-back weekends ("This would mean working back-to-back weekends"), another on-call in the same week (penalty only). Removed the "Swap each block independently" heading. All checks also apply to three-way swap legs and cover-only suggestions.
+- **v1.2.1** — 48-hour post-nights rule for taking a new Day/Ward/E shift. Calendar cells visually stable when selected. All displayed dates padded UK format (Mon 09 Nov 2026). Removed noisy off-day warning and "Why others weren't suggested" tab. Rest day counters reworded.
+- **v1.2.0** — Per-block independent matching. Past shifts hidden. Shift-class filter chips. PIN-per-slot login with audit trail. Admin mode (`?admin=1`).
+- **v1.1.0** — Mutual swap matching. Multi-mode calendar picker. Weekend/LTFT handling confirmed.
+- **v1.0.0** — Initial release.
 
 ---
 
