@@ -1,6 +1,6 @@
 # Resident Doctor Swap
 
-**Version 1.3.0** · Rota period 05 Aug 2026 – 02 Feb 2027
+**Version 1.4.0** · Rota period 05 Aug 2026 – 02 Feb 2027
 
 A small static web app that reads your SpR on-call rota and suggests the **best person to ask for a shift swap** when you want a day (or block of days) off.
 
@@ -10,11 +10,22 @@ The version number appears in the footer of the app itself so anyone using it ca
 
 ## Changelog
 
-- **v1.3.0** — **Merged-schedule validation (major safety layer).** Every proposed swap now validates the person's whole resulting schedule, not days in isolation. Hard rules: night blocks can never butt against other on-calls (rest day before, 46h / 2 clear days after); weekend ward blocks need 2 clear days after, a clear day before, and a rest day 2 days before (moves to 1 day before when that's the person's LTFT day); max 4 nights unchanged. This fixes a bug where a weekend ward could be offered immediately before someone's existing night block. Soft rules (allowed but warned and ranked lower): back-to-back on-call shifts, back-to-back weekends ("This would mean working back-to-back weekends"), another on-call in the same week (penalty only). Removed the "Swap each block independently" heading. All checks also apply to three-way swap legs and cover-only suggestions.
-- **v1.2.1** — 48-hour post-nights rule for taking a new Day/Ward/E shift. Calendar cells visually stable when selected. All displayed dates padded UK format (Mon 09 Nov 2026). Removed noisy off-day warning and "Why others weren't suggested" tab. Rest day counters reworded.
-- **v1.2.0** — Per-block independent matching. Past shifts hidden. Shift-class filter chips. PIN-per-slot login with audit trail. Admin mode (`?admin=1`).
-- **v1.1.0** — Mutual swap matching. Multi-mode calendar picker. Weekend/LTFT handling confirmed.
+- **v1.4.0** — **Back-to-back weekend avoidance via three-way swaps.** When every available direct swap would put someone on consecutive weekends, the engine now runs the three-way search and offers only chains where nobody works back-to-back weekends. These are shown first, above the warned direct swaps, with a note explaining why. Works in both single-block and per-block views.
+
+- **v1.3.3** — Back button: "← Choose a different slot" appears in Step 1 once a slot is picked, and a floating "↺ Start again" pill appears bottom-left once you've scrolled into the results. Either resets the whole flow and returns to the slot picker.
+
+- **v1.3.2** — **Copy button fixed:** now copies the full email text with a reliable fallback for browsers where the clipboard API silently fails (previously nothing was copied and the last clipboard item — often a link — got pasted instead). **Email templates rewritten:** no slot numbers, "(name)" placeholders for the partner and the sender's sign-off, rest-days line removed. Rota-team email now reads "Please could you action the following on-call swap that (name) and I have agreed to…".
+
+- **v1.3.1** — **Cross-device preference sync fixed.** Blob reads now use strong consistency (previously a laptop could read stale data after a phone saved). Frontend tolerates both backend response shapes, and prefs saved while the backend was unreachable are queued and re-uploaded automatically on the next successful connection instead of being lost. **Phone calendar fixed:** rapid date taps no longer trigger the phone's double-tap zoom (which made numbers jump off-screen); calendar cells hard-constrained against overflow; tightened layouts at ≤480px and ≤360px. Verified zero horizontal overflow at 390/360/320px widths.
+- **v1.3.0** — **Merged-schedule validation (major safety layer).** Every proposed swap validates the person's whole resulting schedule. Hard rules: nights never butt against other on-calls (rest day before, 46h after); weekend ward blocks need 2 clear days after, a clear day before, and a rest day 2 days before (1 day before if LTFT); max 4 nights. Soft rules (warned, ranked lower): back-to-back on-calls, back-to-back weekends, same-week proximity. Applies to direct, three-way, and cover-only suggestions.
+- **v1.2.1** — 48-hour post-nights rule. Calendar cell alignment. Padded UK dates. Removed noisy warnings and "Why others" tab.
+- **v1.2.0** — Per-block independent matching. Past shifts hidden. Shift-class filters. PIN login + audit trail. Admin mode (`?admin=1`).
+- **v1.1.0** — Mutual swap matching. Multi-mode calendar picker.
 - **v1.0.0** — Initial release.
+
+## Deploying this update
+
+Replace `index.html`, `app.js`, `package.json`, `netlify/functions/prefs.mjs`, and `README.md` in the repo. **The `netlify/functions/prefs.mjs` update is essential this time** — it carries the strong-consistency fix that makes preferences appear correctly across devices. After Netlify redeploys, do a hard refresh (or just reopen) on each device once.
 
 ---
 

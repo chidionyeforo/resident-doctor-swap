@@ -245,29 +245,34 @@
   .cal-host{
     border:1px solid var(--line);border-radius:var(--radius);
     background:#fff;padding:12px;
+    max-width:100%;overflow:hidden;
+    touch-action:manipulation;
   }
   .cal-nav{
     display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;
   }
   .cal-nav-btn{
-    width:34px;height:34px;border-radius:8px;
+    width:34px;height:34px;border-radius:8px;flex:0 0 auto;
     border:1.5px solid var(--line);background:#fff;color:var(--ink-soft);
     font-size:1.3rem;line-height:1;cursor:pointer;font-family:var(--display);
     transition:border-color .12s,background .12s,color .12s;
     display:flex;align-items:center;justify-content:center;
+    touch-action:manipulation;-webkit-tap-highlight-color:transparent;
   }
   .cal-nav-btn:hover{border-color:var(--teal);color:var(--teal-dark);background:var(--teal-wash)}
   .cal-nav-btn:disabled{opacity:.35;cursor:not-allowed}
   .cal-month-label{
     font-family:var(--display);font-weight:700;font-size:1rem;
     color:var(--ink);letter-spacing:-.01em;
+    min-width:0;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
   }
   .cal-weekdays{
-    display:grid;grid-template-columns:repeat(7,1fr);gap:2px;
+    display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:2px;
     margin-bottom:4px;font-family:var(--mono);font-size:.65rem;
     letter-spacing:.06em;color:var(--muted);text-align:center;padding:0 2px;
   }
-  .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px}
+  .cal-weekdays span{min-width:0;overflow:hidden}
+  .cal-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:3px;width:100%}
   .cal-day{
     border:2px solid transparent;background:transparent;
     aspect-ratio:1;
@@ -279,6 +284,14 @@
     font-variant-numeric:tabular-nums;
     box-sizing:border-box;
     line-height:1;
+    min-width:0;width:100%;overflow:hidden;
+    /* Rapid taps on dates were triggering the phone's double-tap-to-zoom,
+       which made the calendar jump and numbers slide off-screen.
+       touch-action:manipulation disables double-tap zoom on these cells
+       (pinch zoom still works everywhere). */
+    touch-action:manipulation;
+    -webkit-tap-highlight-color:transparent;
+    user-select:none;-webkit-user-select:none;
   }
   .cal-day.cal-empty{visibility:hidden;pointer-events:none}
   .cal-day.cal-wknd{color:var(--muted)}
@@ -753,7 +766,26 @@
     .swap-arrow{margin-left:64px}
     .rest-travel{margin-left:74px}
     .card-actions button{flex:1 1 100%}
+    .cal-host{padding:9px}
+    .cal-grid{gap:2px}
+    .cal-day{font-size:.82rem;border-radius:6px}
   }
+  @media (max-width:360px){
+    .cal-day{font-size:.76rem;border-width:1.5px}
+    .cal-weekdays{font-size:.58rem}
+    .cal-month-label{font-size:.9rem}
+  }
+  .restart-float{
+    position:fixed;bottom:18px;left:18px;z-index:50;
+    font-family:var(--display);font-weight:600;font-size:.84rem;
+    background:var(--ink);color:#fff;border:none;border-radius:999px;
+    padding:11px 17px;cursor:pointer;
+    box-shadow:0 6px 18px -4px rgba(15,29,34,.45);
+    transition:transform .12s,background .15s,opacity .2s;
+    touch-action:manipulation;-webkit-tap-highlight-color:transparent;
+  }
+  .restart-float:hover{background:var(--teal-dark);transform:translateY(-1px)}
+
   @media (prefers-reduced-motion:reduce){
     *{transition:none !important;animation:none !important;scroll-behavior:auto !important}
   }
@@ -789,6 +821,7 @@
     </select>
     <div id="person-meta"></div>
     <div id="login-badge" class="login-badge unverified hide" style="margin-top:12px"></div>
+    <button id="restart" class="btn-ghost hide" type="button" style="margin-top:12px;width:100%">← Choose a different slot</button>
   </section>
 
   <section id="mutual-banner" class="card mutual-banner hide" aria-live="polite"></section>
@@ -848,8 +881,10 @@
 
   <section id="results"></section>
 
-  <footer>The rota team makes all swaps official. Always confirm. <span class="footer-ver">v1.3.0</span></footer>
+  <footer>The rota team makes all swaps official. Always confirm. <span class="footer-ver">v1.4.0</span></footer>
 </div>
+
+<button id="restart-float" class="restart-float hide" type="button" aria-label="Start again">↺ Start again</button>
 
 <!-- HELP MODAL -->
 <div class="modal" id="help-modal" role="dialog" aria-labelledby="help-title" aria-modal="true">

@@ -41,7 +41,10 @@ function cleanAction(s) {
 export default async (request) => {
   let store;
   try {
-    store = getStore(STORE);
+    // Strong consistency: without this, reads served from a different edge
+    // node (i.e. the user's other device) can lag behind writes and make
+    // saved preferences appear missing across devices.
+    store = getStore({ name: STORE, consistency: "strong" });
   } catch (e) {
     return new Response(JSON.stringify({ error: "blob store unavailable" }), { status: 503, headers: JSON_HEADERS });
   }

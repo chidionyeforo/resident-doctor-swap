@@ -378,7 +378,7 @@
       var self = this;
       combined.perBlock = combined.reqBlocks.map(function (b) {
         var r = self._searchFor(reqLabel, b.idxs, unavail, prefs);
-        return { block: b, swaps: r.swaps, chains: r.chains, coverOnly: r.coverOnly };
+        return { block: b, swaps: r.swaps, chains: r.chains, chainsReason: r.chainsReason, coverOnly: r.coverOnly };
       });
     }
     return combined;
@@ -484,12 +484,24 @@
       return ("" + a.label).localeCompare("" + b.label, undefined, { numeric: true });
     });
 
-    var chains = [];
-    if (!swaps.length && reqBlocks.length === 1) {
-      chains = this._findChains(reqLabel, reqBlocks[0], sel, unavail, prefs);
+    var chains = [], chainsReason = null;
+    var B2B = "This would mean working back-to-back weekends";
+    if (reqBlocks.length === 1) {
+      if (!swaps.length) {
+        // No direct swap at all — three-way is the fallback.
+        chains = this._findChains(reqLabel, reqBlocks[0], sel, unavail, prefs);
+        if (chains.length) chainsReason = "no-direct";
+      } else if (swaps.every(function (s) { return s.warnings.indexOf(B2B) >= 0; })) {
+        // Direct swaps exist but EVERY one would put someone on back-to-back
+        // weekends. Look for a three-way route where nobody does — and only
+        // offer chains that actually achieve that.
+        chains = this._findChains(reqLabel, reqBlocks[0], sel, unavail, prefs)
+          .filter(function (ch) { return ch.warnings.indexOf(B2B) < 0; });
+        if (chains.length) chainsReason = "avoid-b2b";
+      }
     }
 
-    return { reqBlocks: reqBlocks, swaps: swaps, chains: chains, coverOnly: coverOnly, ineligible: ineligible };
+    return { reqBlocks: reqBlocks, swaps: swaps, chains: chains, chainsReason: chainsReason, coverOnly: coverOnly, ineligible: ineligible };
   };
 
   /* Standalone mutual-match scan. For a given person, returns any other
@@ -663,6 +675,7 @@
     ENDPOINT: "/.netlify/functions/prefs",
     CACHE: "rds_prefs_cache",
     AUDIT_CACHE: "rds_audit_cache",
+    PENDING: "rds_prefs_pending",
     shared: false,
     auditLog: [],
     // Returns object of {label: {unavail, wantedOff, pinHash, updated}}; populates this.auditLog
@@ -673,8 +686,23 @@
         .then(function (r) { if (!r.ok) throw new Error("no backend"); return r.json(); })
         .then(function (j) {
           self.shared = true;
-          var prefs = (j && j.prefs) || {};
-          var audit = (j && j.audit) || [];
+          // Shape-tolerant: current backend returns {prefs, audit}; an older
+          // deployed function returns the flat prefs map directly. Reading
+          // the wrong shape here made saved prefs silently vanish on other
+          // devices, so accept both.
+          var prefs, audit;
+          if (j && j.prefs !== undefined) { prefs = j.prefs || {}; audit = j.audit || []; }
+          else { prefs = j || {}; audit = []; }
+          // Reconcile: if this device has prefs that never reached the server
+          // (saved while offline / backend briefly down), push them up now
+          // rather than letting the server copy silently win.
+          try {
+            var pending = JSON.parse(localStorage.getItem(self.PENDING) || "{}");
+            Object.keys(pending).forEach(function (lbl) {
+              prefs[lbl] = pending[lbl];
+              self.save(lbl, pending[lbl]); // re-attempt upload
+            });
+          } catch (e) {}
           try { localStorage.setItem(self.CACHE, JSON.stringify(prefs)); } catch (e) {}
           try { localStorage.setItem(self.AUDIT_CACHE, JSON.stringify(audit)); } catch (e) {}
           self.auditLog = audit;
@@ -697,7 +725,15 @@
       return fetch(this.ENDPOINT, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ label: label, prefs: prefs })
-      }).then(function (r) { self.shared = r.ok; return r.ok; })
+      }).then(function (r) {
+        self.shared = r.ok;
+        try {
+          var pending = JSON.parse(localStorage.getItem(self.PENDING) || "{}");
+          if (r.ok) delete pending[label]; else pending[label] = prefs;
+          localStorage.setItem(self.PENDING, JSON.stringify(pending));
+        } catch (e) {}
+        return r.ok;
+      })
         .catch(function () { self.shared = false; return false; });
     },
     setPin: function (label, pinHash) {
@@ -758,6 +794,7 @@
       renderPerson();
       renderUnavail();
       renderLoginBadge();
+      updateRestartVis();
       // Refresh from the shared store so seeded data is up-to-date and we can
       // check whether anyone is currently looking for one of this person's shifts.
       Store.loadAll().then(function (j) {
@@ -770,6 +807,27 @@
       });
     });
   })();
+
+  // ---- back / start again --------------------------------------------------
+  // Resets the whole flow to the slot picker (reuses the picker's own change
+  // handler for a full state reset) and scrolls back to the top.
+  function resetToStart() {
+    var sel = $("#person");
+    sel.value = "";
+    sel.dispatchEvent(new Event("change"));
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+  $("#restart").addEventListener("click", resetToStart);
+  $("#restart-float").addEventListener("click", resetToStart);
+
+  // Inline button shows whenever a slot is picked; the floating pill only
+  // once you've scrolled away from the picker (that's when you need it).
+  function updateRestartVis() {
+    $("#restart").classList.toggle("hide", !state.person);
+    var showFloat = !!state.person && window.scrollY > 350;
+    $("#restart-float").classList.toggle("hide", !showFloat);
+  }
+  window.addEventListener("scroll", updateRestartVis, { passive: true });
 
   function renderPerson() {
     var wrap = $("#shifts"); wrap.innerHTML = "";
@@ -1360,18 +1418,29 @@
         root.appendChild(combo);
       }
     } else {
-      // Single-block view: existing behaviour
+      // Single-block view
       var mutualSwaps = res.swaps.filter(function (s) { return s.mutual; });
       var otherSwaps = res.swaps.filter(function (s) { return !s.mutual; });
 
+      // When every direct swap means back-to-back weekends, the three-way
+      // routes that avoid it are the better recommendation — show them first.
+      if (res.chainsReason === "avoid-b2b" && res.chains.length) {
+        var nb = el("div", "card note");
+        nb.appendChild(el("strong", null, "Every direct swap here means someone working back-to-back weekends."));
+        nb.appendChild(el("p", null, "These three-way swaps get you the same dates off without anyone working consecutive weekends."));
+        root.appendChild(nb);
+        root.appendChild(el("h3", "res-h", "Three-way swaps — no back-to-back weekends"));
+        res.chains.slice(0, 5).forEach(function (ch, i) { root.appendChild(chainCard(ch, i === 0)); });
+      }
+
       if (mutualSwaps.length) {
         root.appendChild(el("h3", "res-h mutual-h", "Mutual swap — both of you are looking"));
-        mutualSwaps.slice(0, 5).forEach(function (sw, i) { root.appendChild(swapCard(sw, i === 0)); });
+        mutualSwaps.slice(0, 5).forEach(function (sw, i) { root.appendChild(swapCard(sw, i === 0 && res.chainsReason !== "avoid-b2b")); });
       }
 
       if (otherSwaps.length) {
         root.appendChild(el("h3", "res-h", mutualSwaps.length ? "Other direct swaps" : "Direct swaps"));
-        otherSwaps.slice(0, 8).forEach(function (sw, i) { root.appendChild(swapCard(sw, i === 0 && !mutualSwaps.length)); });
+        otherSwaps.slice(0, 8).forEach(function (sw, i) { root.appendChild(swapCard(sw, i === 0 && !mutualSwaps.length && res.chainsReason !== "avoid-b2b")); });
       }
 
       if (!res.swaps.length) {
@@ -1388,7 +1457,7 @@
         }
       }
 
-      if (res.chains && res.chains.length) {
+      if (res.chains && res.chains.length && res.chainsReason !== "avoid-b2b") {
         root.appendChild(el("h3", "res-h", "Three-way swaps"));
         res.chains.slice(0, 5).forEach(function (ch, i) { root.appendChild(chainCard(ch, !res.swaps.length && i === 0)); });
       }
@@ -1433,22 +1502,30 @@
     var mutuals = pb.swaps.filter(function (s) { return s.mutual; });
     var others = pb.swaps.filter(function (s) { return !s.mutual; });
 
+    // If every direct swap for this block means back-to-back weekends,
+    // lead with the three-way routes that avoid it.
+    var avoidB2b = pb.chainsReason === "avoid-b2b" && pb.chains && pb.chains.length;
+    if (avoidB2b) {
+      wrap.appendChild(el("p", "perblock-note", "Every direct swap for this block means back-to-back weekends — these three-way swaps avoid that:"));
+      pb.chains.slice(0, 3).forEach(function (ch, i) { wrap.appendChild(chainCard(ch, i === 0)); });
+    }
+
     if (mutuals.length) {
-      mutuals.slice(0, 3).forEach(function (sw, i) { wrap.appendChild(swapCard(sw, i === 0)); });
+      mutuals.slice(0, 3).forEach(function (sw, i) { wrap.appendChild(swapCard(sw, i === 0 && !avoidB2b)); });
     }
     if (others.length) {
       others.slice(0, 5).forEach(function (sw, i) {
-        wrap.appendChild(swapCard(sw, !mutuals.length && i === 0));
+        wrap.appendChild(swapCard(sw, !mutuals.length && i === 0 && !avoidB2b));
       });
     }
     if (!pb.swaps.length) {
-      if (pb.chains && pb.chains.length) {
+      if (pb.chains && pb.chains.length && !avoidB2b) {
         wrap.appendChild(el("p", "perblock-note", "No direct two-way swap for this block — see three-way options below."));
         pb.chains.slice(0, 3).forEach(function (ch, i) { wrap.appendChild(chainCard(ch, i === 0)); });
       } else if (pb.coverOnly && pb.coverOnly.length) {
         wrap.appendChild(el("p", "perblock-note", "No clean swap — these people could cover but with no return shift."));
         pb.coverOnly.slice(0, 3).forEach(function (c) { wrap.appendChild(coverCard(c)); });
-      } else {
+      } else if (!avoidB2b) {
         wrap.appendChild(el("p", "perblock-note", "No match found for this block."));
       }
     }
@@ -1589,10 +1666,9 @@
   }
 
   function buildAskEmail(opts) {
-    var me = engine.staffByLabel[state.person];
     var lines = [];
     if (opts.kind === "direct") {
-      lines.push("Hi,");
+      lines.push("Hi (name),");
       lines.push("");
       lines.push("I'm trying to arrange an on-call swap and the swap shop has flagged you as a good match. Would you be willing to swap?");
       lines.push("");
@@ -1605,9 +1681,9 @@
       lines.push("If that works, let me know and we'll send it to the rota team to make official.");
       lines.push("");
       lines.push("Thanks,");
-      lines.push("Slot " + me.label + " (" + me.grade + ", " + me.dept + ")");
+      lines.push("(name)");
       return {
-        subject: "On-call swap request — Slot " + me.label + " ↔ Slot " + opts.partnerLabel,
+        subject: "On-call swap request",
         body: lines.join("\n"),
         to: ""
       };
@@ -1617,16 +1693,16 @@
       lines.push("");
       lines.push("Putting you both on the same email — the swap shop's suggested a three-way swap that works for all of us:");
       lines.push("");
-      lines.push("• Slot " + ch.C.label + " takes my " + CLASS_LABEL[ch.rb.cls] + " — " + emailDates(ch.rb.idxs));
-      lines.push("• Slot " + ch.D.label + " takes Slot " + ch.C.label + "'s " + CLASS_LABEL[ch.cb.cls] + " — " + emailDates(ch.cb.idxs));
-      lines.push("• I take Slot " + ch.D.label + "'s " + CLASS_LABEL[ch.db.cls] + " — " + emailDates(ch.db.idxs));
+      lines.push("• (name) takes my " + CLASS_LABEL[ch.rb.cls] + " — " + emailDates(ch.rb.idxs));
+      lines.push("• (name) takes their " + CLASS_LABEL[ch.cb.cls] + " — " + emailDates(ch.cb.idxs));
+      lines.push("• I take the " + CLASS_LABEL[ch.db.cls] + " — " + emailDates(ch.db.idxs));
       lines.push("");
       lines.push("Everyone keeps the same number of on-calls. If you're both happy, let me know and we'll send it to the rota team.");
       lines.push("");
       lines.push("Thanks,");
-      lines.push("Slot " + me.label + " (" + me.grade + ", " + me.dept + ")");
+      lines.push("(name)");
       return {
-        subject: "Three-way on-call swap — Slots " + me.label + " / " + ch.C.label + " / " + ch.D.label,
+        subject: "Three-way on-call swap",
         body: lines.join("\n"),
         to: ""
       };
@@ -1634,45 +1710,39 @@
   }
 
   function buildConfirmEmail(opts) {
-    var me = engine.staffByLabel[state.person];
     var lines = [];
     if (opts.kind === "direct") {
-      var partnerSummary = "Slot " + opts.partnerLabel + " (" + opts.partnerGrade + ", " + opts.partnerDept + ")";
-      lines.push("Hi rota team,");
+      lines.push("Hi,");
       lines.push("");
-      lines.push("Please could you action the following on-call swap. " + partnerSummary + " has agreed to it:");
+      lines.push("Please could you action the following on-call swap that (name) and I have agreed to:");
       lines.push("");
       opts.assignments.forEach(function (a) {
         var cls = CLASS_LABEL[a.rb.cls];
-        lines.push("• " + partnerSummary + " takes my " + cls + ": " + emailDates(a.rb.idxs));
+        lines.push("• (name) takes my " + cls + ": " + emailDates(a.rb.idxs));
         lines.push("• I take their " + cls + ": " + emailDates(a.cb.idxs));
       });
       lines.push("");
-      lines.push("Rest days either side travel with the shift in the usual way.");
-      lines.push("");
       lines.push("Thanks,");
-      lines.push("Slot " + me.label + " (" + me.grade + ", " + me.dept + ")");
+      lines.push("(name)");
       return {
-        subject: "Please action: on-call swap — Slot " + me.label + " ↔ Slot " + opts.partnerLabel,
+        subject: "On-call swap to action",
         body: lines.join("\n"),
         to: state.rotaTeamEmail || ""
       };
     } else {
       var ch = opts.chain;
-      lines.push("Hi rota team,");
+      lines.push("Hi,");
       lines.push("");
-      lines.push("Please could you action the following three-way on-call swap. Both other parties have agreed:");
+      lines.push("Please could you action the following three-way on-call swap that (name), (name) and I have agreed to:");
       lines.push("");
-      lines.push("• Slot " + ch.C.label + " (" + ch.C.grade + ", " + ch.C.dept + ") takes my " + CLASS_LABEL[ch.rb.cls] + ": " + emailDates(ch.rb.idxs));
-      lines.push("• Slot " + ch.D.label + " (" + ch.D.grade + ", " + ch.D.dept + ") takes Slot " + ch.C.label + "'s " + CLASS_LABEL[ch.cb.cls] + ": " + emailDates(ch.cb.idxs));
-      lines.push("• I take Slot " + ch.D.label + "'s " + CLASS_LABEL[ch.db.cls] + ": " + emailDates(ch.db.idxs));
-      lines.push("");
-      lines.push("Rest days either side travel with each shift in the usual way. Everyone keeps the same number of on-calls.");
+      lines.push("• (name) takes my " + CLASS_LABEL[ch.rb.cls] + ": " + emailDates(ch.rb.idxs));
+      lines.push("• (name) takes their " + CLASS_LABEL[ch.cb.cls] + ": " + emailDates(ch.cb.idxs));
+      lines.push("• I take the " + CLASS_LABEL[ch.db.cls] + ": " + emailDates(ch.db.idxs));
       lines.push("");
       lines.push("Thanks,");
-      lines.push("Slot " + me.label + " (" + me.grade + ", " + me.dept + ")");
+      lines.push("(name)");
       return {
-        subject: "Please action: three-way on-call swap — Slots " + me.label + " / " + ch.C.label + " / " + ch.D.label,
+        subject: "Three-way on-call swap to action",
         body: lines.join("\n"),
         to: state.rotaTeamEmail || ""
       };
@@ -1698,9 +1768,40 @@
   $("#email-modal").addEventListener("click", function (e) { if (e.target === $("#email-modal")) closeEmailModal(); });
   $("#email-copy").addEventListener("click", function () {
     var text = "Subject: " + $("#email-subject").value + "\n\n" + $("#email-body").value;
-    navigator.clipboard.writeText(text).then(function () {
-      var b = $("#email-copy"); var t = b.textContent; b.textContent = "Copied"; setTimeout(function () { b.textContent = t; }, 1500);
-    });
+    var btn = $("#email-copy");
+    function flashBtn(msg) {
+      var t = btn.textContent; btn.textContent = msg;
+      setTimeout(function () { btn.textContent = t; }, 1500);
+    }
+    // Fallback path: select-and-copy via a temporary textarea. Works on
+    // browsers where the async Clipboard API silently rejects.
+    function legacyCopy() {
+      try {
+        var ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed"; ta.style.left = "-9999px"; ta.style.top = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        ta.setSelectionRange(0, text.length); // iOS needs the explicit range
+        var ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+        if (ok) { flashBtn("Copied"); return true; }
+      } catch (e) {}
+      // Last resort: select the visible body so the user can copy manually
+      var body = $("#email-body");
+      body.focus(); body.select();
+      try { body.setSelectionRange(0, body.value.length); } catch (e) {}
+      flashBtn("Press copy on your keyboard");
+      return false;
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text)
+        .then(function () { flashBtn("Copied"); })
+        .catch(function () { legacyCopy(); });
+    } else {
+      legacyCopy();
+    }
   });
   $("#email-open").addEventListener("click", function () {
     var to = encodeURIComponent($("#email-to").value || "");
