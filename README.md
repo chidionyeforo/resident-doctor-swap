@@ -1,6 +1,6 @@
 # Resident Doctor Swap
 
-**Version 1.4.0** · Rota period 05 Aug 2026 – 02 Feb 2027
+**Version 1.6.0** · Rota period 05 Aug 2026 – 02 Feb 2027
 
 A small static web app that reads your SpR on-call rota and suggests the **best person to ask for a shift swap** when you want a day (or block of days) off.
 
@@ -9,6 +9,10 @@ Everything runs in the browser. There's no server, no database, no login for rea
 The version number appears in the footer of the app itself so anyone using it can confirm what they're on.
 
 ## Changelog
+
+- **v1.6.0** — **Stable identity: the store now keys on spreadsheet column, not slot number.** When the rota is renumbered (someone joins or leaves), display numbers change but each person's column id is permanent, so PINs and unavailability stay attached to the right person with zero store migration. **Non-on-call slots removed entirely** (ActingUp and any column with no on-call shifts are hidden — never in the picker, never suggested). **Slot numbers cleaned up** to a gap-free sequence in column order. **Unequal-length direct swaps are now hard-blocked** (previously warned) — every swap, direct or three-way, moves an equal number of shifts. "Start again" renamed to "Back".
+
+- **v1.5.0** — **Slot 6 removed and all higher slots renumbered down by one** (7→6 … 34→33, split slots 12a/b→11a/b, 19a/b→18a/b, 22a/b→21a/b, 23a/b→22a/b; 1–5 and ActingUp unchanged). Shared-store and device keys bumped to v2 so old-numbering data can't attach to the wrong person — everyone re-enters their PIN and unavailable dates once. **Three-way swaps now move equal shift counts** on every leg (hard rule) so nobody's on-call total changes. **Unequal-length direct swaps** are warned ("your on-call totals would change, which unbalances the rota") and ranked to the bottom. **Night-before-LTFT rule:** a night shift finishing 09:30 next morning can never be placed the day before someone's LTFT day (a day/E/ward shift on that date remains fine).
 
 - **v1.4.0** — **Back-to-back weekend avoidance via three-way swaps.** When every available direct swap would put someone on consecutive weekends, the engine now runs the three-way search and offers only chains where nobody works back-to-back weekends. These are shown first, above the warned direct swaps, with a note explaining why. Works in both single-block and per-block views.
 

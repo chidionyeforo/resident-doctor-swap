@@ -19,8 +19,13 @@
 import { getStore } from "@netlify/blobs";
 
 const STORE = "rds-prefs";
-const PREFS_KEY = "all";
-const AUDIT_KEY = "audit";
+// Keys stored by STABLE id (spreadsheet column, e.g. "L", "AA") — never by the
+// display slot number. When the rota is renumbered (someone joins/leaves), the
+// display numbers change but the column ids don't, so PINs and unavailability
+// stay attached to the right person and the store needs no migration.
+// "-id" suffix marks this identity scheme; earlier deploys keyed by slot number.
+const PREFS_KEY = "all-id";
+const AUDIT_KEY = "audit-id";
 const AUDIT_CAP = 500;
 const JSON_HEADERS = { "content-type": "application/json", "cache-control": "no-store" };
 

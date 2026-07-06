@@ -221,6 +221,16 @@
         }
       }
     }
+    // Night-into-LTFT rule: a night shift runs 20:30–09:30, finishing the NEXT
+    // morning. If tomorrow is this person's LTFT day, working tonight's night
+    // would mean working into their LTFT day — never allowed. (A day/E/ward
+    // shift on the same date is fine, since it ends before midnight.)
+    if (shiftCls === "NIGHT") {
+      var nx = this.cell(label, idx + 1);
+      if (nx.s === "LTFT") {
+        return { ok: false, reason: "night shift would run into their LTFT day on " + (this.data.dates[idx + 1] ? this.data.dates[idx + 1].iso : "the next day") + " (nights finish 09:30 the next morning)" };
+      }
+    }
     return { ok: true };
   };
 
@@ -421,6 +431,9 @@
         var best = null;
         cBlocks.forEach(function (cb) {
           if (cb.used || cb.cls !== rb.cls) return;
+          // Equal shift counts only — an uneven swap changes both people's
+          // on-call totals and unbalances the rota. Never allowed.
+          if (cb.len !== rb.len) return;
           if (cb.idxs.some(function (i) { return unavail[i]; })) return;
 
           var cbAdd = cb.idxs.map(function (i) { return { idx: i, cls: shiftClass(self.cell(cl, i).v) }; });
@@ -436,9 +449,10 @@
           if (!candAssess.ok) return;
 
           var sc = equity(rb, cb) + reqAssess.penalty + candAssess.penalty;
+          var lenWarns = reqAssess.warnings.concat(candAssess.warnings);
           var mutualLeg = cb.idxs.some(function (i) { return myWanted[i]; });
           if (mutualLeg) sc -= 100; // dominate ordering
-          if (!best || sc < best.sc) best = { cb: cb, sc: sc, mutualLeg: mutualLeg, warns: reqAssess.warnings.concat(candAssess.warnings) };
+          if (!best || sc < best.sc) best = { cb: cb, sc: sc, mutualLeg: mutualLeg, warns: lenWarns };
         });
         if (best) { best.cb.used = true; assignments.push({ rb: rb, cb: best.cb, sc: best.sc, mutualLeg: best.mutualLeg, warns: best.warns }); }
         else allMatched = false;
@@ -546,8 +560,11 @@
 
     function prefOf(l) { return (prefs[l] || {}).unavail || null; }
     function blocksOf(l) {
+      // Same class AND same length as the requested block — a three-way must
+      // move the same number of shifts around the loop, or someone's on-call
+      // total changes and the rota is unbalanced.
       return self.groupBlocks(l, self.oncallShifts(l).map(function (s) { return s.idx; }))
-        .filter(function (b) { return b.cls === K; });
+        .filter(function (b) { return b.cls === K && b.len === rb.len; });
     }
     function addListOf(owner, block) {
       return block.idxs.map(function (i) { return { idx: i, cls: shiftClass(self.cell(owner, i).v) }; });
@@ -633,8 +650,15 @@
     verifiedSlot: null,    // slot label confirmed by PIN this session
     admin: false           // ?admin=1 in URL enables admin banner + audit view
   };
-  var allPrefs = {};
-  var prefsMap = {};
+  var allPrefs = {};   // keyed by STABLE id (spreadsheet column) — survives renumbering
+  var prefsMap = {};   // keyed by display label — consumed by the engine
+
+  // Identity helpers. The display number ("slot 7") can change when the rota
+  // changes; the spreadsheet column ("L") never does. Everything persistent
+  // (PINs, unavailability, wanted-off, audit, verified-device) keys on id.
+  var idByLabel = {}, labelById = {};
+  (data.staff || []).forEach(function (s) { idByLabel[s.label] = s.id; labelById[s.id] = s.label; });
+  function personId() { return state.person ? idByLabel[state.person] : null; }
 
   var $ = function (s) { return document.querySelector(s); };
   function el(tag, cls, txt) { var e = document.createElement(tag); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; }
@@ -673,9 +697,9 @@
   // ---- shared preference store -------------------------------------------
   var Store = {
     ENDPOINT: "/.netlify/functions/prefs",
-    CACHE: "rds_prefs_cache",
-    AUDIT_CACHE: "rds_audit_cache",
-    PENDING: "rds_prefs_pending",
+    CACHE: "rds_prefs_cache_id",
+    AUDIT_CACHE: "rds_audit_cache_id",
+    PENDING: "rds_prefs_pending_id",
     shared: false,
     auditLog: [],
     // Returns object of {label: {unavail, wantedOff, pinHash, updated}}; populates this.auditLog
@@ -767,8 +791,10 @@
   };
   function rebuildPrefsMap() {
     prefsMap = {};
-    Object.keys(allPrefs).forEach(function (lbl) {
-      var entry = allPrefs[lbl] || {};
+    Object.keys(allPrefs).forEach(function (id) {
+      var lbl = labelById[id];
+      if (!lbl) return; // a stored id with no current slot (person left) — ignore
+      var entry = allPrefs[id] || {};
       var u = {}; (entry.unavail || []).forEach(function (iso) { var i = idxOfIso(iso); if (i != null) u[i] = 1; });
       var w = {}; (entry.wantedOff || []).forEach(function (iso) { var i = idxOfIso(iso); if (i != null) w[i] = 1; });
       prefsMap[lbl] = { unavail: u, wantedOff: w };
@@ -857,7 +883,7 @@
     }
 
     // Which dates has THIS user already advertised as wanted-off?
-    var myEntry = allPrefs[state.person] || {};
+    var myEntry = allPrefs[personId()] || {};
     var myAdvertised = {};
     (myEntry.wantedOff || []).forEach(function (iso) { myAdvertised[iso] = 1; });
 
@@ -1055,7 +1081,7 @@
   // so they don't have to enter them twice.
   function seedUnavailFromPrefs() {
     if (!state.person) return;
-    var p = allPrefs[state.person]; if (!p || !p.unavail) return;
+    var p = allPrefs[personId()]; if (!p || !p.unavail) return;
     // Reconstruct ranges from the stored ISO list by coalescing consecutive
     // dates back into multi-day ranges. Preserves whatever the user originally
     // typed in the common case (a single range entered as a range).
@@ -1296,16 +1322,16 @@
       for (var i = s; i <= e; i++) iso[isoOfIdx(i)] = 1;
     });
     var list = Object.keys(iso).sort();
-    var prev = allPrefs[state.person] || {};
+    var prev = allPrefs[personId()] || {};
     if (JSON.stringify(list) === JSON.stringify(prev.unavail || [])) return;
     var p = {
       unavail: list,
       wantedOff: prev.wantedOff || [],
       updated: new Date().toISOString().slice(0, 10)
     };
-    allPrefs[state.person] = p;
+    allPrefs[personId()] = p;
     setStatus("Saving your unavailable dates…", "saving");
-    Store.save(state.person, p).then(function (ok) {
+    Store.save(personId(), p).then(function (ok) {
       rebuildPrefsMap();
       setStatus(ok ? "Saved — visible to everyone using the swap shop." : "Saved on this device only — shared store unreachable.", ok ? "ok" : "local");
     });
@@ -1316,22 +1342,22 @@
   // also when they explicitly clear it.
   function publishWantedOff(isoList) {
     if (!state.person) return Promise.resolve(false);
-    var prev = allPrefs[state.person] || {};
+    var prev = allPrefs[personId()] || {};
     var sorted = (isoList || []).slice().sort();
     var p = {
       unavail: prev.unavail || [],
       wantedOff: sorted,
       updated: new Date().toISOString().slice(0, 10)
     };
-    allPrefs[state.person] = p;
+    allPrefs[personId()] = p;
     rebuildPrefsMap();
     // Audit: was something added or cleared?
     if (sorted.length) {
-      Store.logEvent({ slot: state.person, action: "publish_wanted", dates: sorted });
+      Store.logEvent({ slot: personId(), action: "publish_wanted", dates: sorted });
     } else if ((prev.wantedOff || []).length) {
-      Store.logEvent({ slot: state.person, action: "clear_wanted" });
+      Store.logEvent({ slot: personId(), action: "clear_wanted" });
     }
-    return Store.save(state.person, p);
+    return Store.save(personId(), p);
   }
 
   function setStatus(msg, cls) {
@@ -1859,16 +1885,17 @@
       return Array.from(new Uint8Array(buf)).map(function (b) { return b.toString(16).padStart(2, "0"); }).join("");
     });
   }
-  function pinHashFor(slot, pin) { return sha256Hex("rds:" + slot + ":" + pin); }
+  function pinHashFor(id, pin) { return sha256Hex("rds:" + id + ":" + pin); }
 
   function openPinModal() {
     if (!state.person) return;
-    var slot = state.person;
+    var slot = state.person;          // display label
+    var pid = personId();             // stable id
     if (state.verifiedSlot === slot) return; // already verified this session
 
     // Already remembered on this device?
     try {
-      var rem = localStorage.getItem("rds_verified_" + slot);
+      var rem = localStorage.getItem("rds_verified_id_" + pid);
       if (rem === "1") {
         state.verifiedSlot = slot;
         renderLoginBadge();
@@ -1876,7 +1903,7 @@
       }
     } catch (e) {}
 
-    var entry = allPrefs[slot] || {};
+    var entry = allPrefs[pid] || {};
     var firstTime = !entry.pinHash;
     var m = $("#pin-modal");
     $("#pin-modal-title").textContent = firstTime
@@ -1905,8 +1932,6 @@
 
   if ($("#pin-modal")) {
     $("#pin-cancel").addEventListener("click", function () {
-      // Cancel: reset person picker so they can re-pick. They can browse but
-      // actions are gated.
       closePinModal();
     });
     $("#pin-modal").addEventListener("click", function (e) {
@@ -1924,42 +1949,40 @@
   function handlePinSubmit() {
     var m = $("#pin-modal");
     var slot = state.person; if (!slot) return;
+    var pid = personId();
     var pin = ($("#pin-input").value || "").trim();
     if (!/^\d{4}$/.test(pin)) { pinError("PIN must be 4 digits."); return; }
     if (m._firstTime) {
       var confirm = ($("#pin-confirm").value || "").trim();
       if (pin !== confirm) { pinError("PINs don't match."); return; }
       $("#pin-submit").disabled = true;
-      pinHashFor(slot, pin).then(function (hash) {
-        return Store.setPin(slot, hash).then(function (ok) {
+      pinHashFor(pid, pin).then(function (hash) {
+        return Store.setPin(pid, hash).then(function (ok) {
           $("#pin-submit").disabled = false;
           if (!ok && !Store.shared) {
-            // Backend unreachable — keep the local cache but warn the user
             pinError("PIN saved locally — shared store unreachable, PIN won't transfer to other devices.");
           }
-          // Update local prefs cache
-          allPrefs[slot] = allPrefs[slot] || {};
-          allPrefs[slot].pinHash = hash;
+          allPrefs[pid] = allPrefs[pid] || {};
+          allPrefs[pid].pinHash = hash;
           rebuildPrefsMap();
           state.verifiedSlot = slot;
-          try { localStorage.setItem("rds_verified_" + slot, "1"); } catch (e) {}
-          Store.logEvent({ slot: slot, action: "pin_set" });
-          Store.logEvent({ slot: slot, action: "login" });
+          try { localStorage.setItem("rds_verified_id_" + pid, "1"); } catch (e) {}
+          Store.logEvent({ slot: pid, action: "pin_set" });
+          Store.logEvent({ slot: pid, action: "login" });
           closePinModal();
           renderLoginBadge();
           renderAdminBanner();
         });
       });
     } else {
-      // Verify against stored hash
       $("#pin-submit").disabled = true;
-      pinHashFor(slot, pin).then(function (hash) {
+      pinHashFor(pid, pin).then(function (hash) {
         $("#pin-submit").disabled = false;
-        var entry = allPrefs[slot] || {};
+        var entry = allPrefs[pid] || {};
         if (entry.pinHash && entry.pinHash === hash) {
           state.verifiedSlot = slot;
-          try { localStorage.setItem("rds_verified_" + slot, "1"); } catch (e) {}
-          Store.logEvent({ slot: slot, action: "login" });
+          try { localStorage.setItem("rds_verified_id_" + pid, "1"); } catch (e) {}
+          Store.logEvent({ slot: pid, action: "login" });
           closePinModal();
           renderLoginBadge();
           renderAdminBanner();
@@ -1982,9 +2005,9 @@
       el0.appendChild(el("span", null, "Slot " + state.person + " · verified"));
       var btn = el("button", null, "Log out");
       btn.addEventListener("click", function () {
-        try { localStorage.removeItem("rds_verified_" + state.person); } catch (e) {}
+        try { localStorage.removeItem("rds_verified_id_" + personId()); } catch (e) {}
         state.verifiedSlot = null;
-        Store.logEvent({ slot: state.person, action: "logout" });
+        Store.logEvent({ slot: personId(), action: "logout" });
         renderLoginBadge();
       });
       el0.appendChild(btn);
@@ -2050,7 +2073,7 @@
       entries.forEach(function (e) {
         var row = el("div", "audit-row");
         row.appendChild(el("span", "audit-time", fmtAuditTime(e.ts)));
-        row.appendChild(el("span", "audit-slot", "Slot " + e.slot));
+        row.appendChild(el("span", "audit-slot", "Slot " + (labelById[e.slot] || e.slot)));
         row.appendChild(el("span", "audit-action", actionLabel(e.action)));
         if (e.partnerSlot) row.appendChild(el("span", null, "↔ Slot " + e.partnerSlot));
         if (e.dates && e.dates.length) {
