@@ -1,6 +1,6 @@
 # Resident Doctor Swap
 
-**Version 1.6.0** · Rota period 05 Aug 2026 – 02 Feb 2027
+**Version 1.7.0** · Rota period 05 Aug 2026 – 02 Feb 2027
 
 A small static web app that reads your SpR on-call rota and suggests the **best person to ask for a shift swap** when you want a day (or block of days) off.
 
@@ -9,6 +9,8 @@ Everything runs in the browser. There's no server, no database, no login for rea
 The version number appears in the footer of the app itself so anyone using it can confirm what they're on.
 
 ## Changelog
+
+- **v1.7.0** — **Cross-type swaps** as an explicit last-resort option. When you're set on getting dates off and no like-for-like partner exists, the app will now offer swaps into a different shift type (for example, weekend nights for weekend days). They appear in a collapsed "Cross-type swaps — less preferable" section below every like-for-like and three-way option, each carrying a "Cross-type" badge and a plain warning. Equal shift counts and every rest/safety rule still apply; only the like-for-like requirement is relaxed. Cross-type swaps never rank above like-for-like and are never treated as mutual matches. Three-way swaps remain strictly like-for-like.
 
 - **v1.6.0** — **Stable identity: the store now keys on spreadsheet column, not slot number.** When the rota is renumbered (someone joins or leaves), display numbers change but each person's column id is permanent, so PINs and unavailability stay attached to the right person with zero store migration. **Non-on-call slots removed entirely** (ActingUp and any column with no on-call shifts are hidden — never in the picker, never suggested). **Slot numbers cleaned up** to a gap-free sequence in column order. **Unequal-length direct swaps are now hard-blocked** (previously warned) — every swap, direct or three-way, moves an equal number of shifts. "Start again" renamed to "Back".
 

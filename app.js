@@ -430,11 +430,17 @@
         var rbAdd = rb.idxs.map(function (i) { return { idx: i, cls: shiftClass(self.cell(reqLabel, i).v) }; });
         var best = null;
         cBlocks.forEach(function (cb) {
-          if (cb.used || cb.cls !== rb.cls) return;
+          if (cb.used) return;
           // Equal shift counts only — an uneven swap changes both people's
           // on-call totals and unbalances the rota. Never allowed.
           if (cb.len !== rb.len) return;
           if (cb.idxs.some(function (i) { return unavail[i]; })) return;
+
+          // Cross-type (e.g. weekend nights for weekend days) is allowed but
+          // strictly less preferable — every safety rule still applies via
+          // assessPlacement below. The big penalty guarantees a like-for-like
+          // block always wins when one exists.
+          var cross = cb.cls !== rb.cls;
 
           var cbAdd = cb.idxs.map(function (i) { return { idx: i, cls: shiftClass(self.cell(cl, i).v) }; });
 
@@ -450,16 +456,21 @@
 
           var sc = equity(rb, cb) + reqAssess.penalty + candAssess.penalty;
           var lenWarns = reqAssess.warnings.concat(candAssess.warnings);
+          if (cross) {
+            sc += 500;
+            lenWarns = lenWarns.concat(["Cross-type swap: you'd take a " + CLASS_LABEL[cb.cls] + " in place of your " + CLASS_LABEL[rb.cls] + " — allowed, but less preferable"]);
+          }
           var mutualLeg = cb.idxs.some(function (i) { return myWanted[i]; });
           if (mutualLeg) sc -= 100; // dominate ordering
-          if (!best || sc < best.sc) best = { cb: cb, sc: sc, mutualLeg: mutualLeg, warns: lenWarns };
+          if (!best || sc < best.sc) best = { cb: cb, sc: sc, mutualLeg: mutualLeg, warns: lenWarns, cross: cross };
         });
-        if (best) { best.cb.used = true; assignments.push({ rb: rb, cb: best.cb, sc: best.sc, mutualLeg: best.mutualLeg, warns: best.warns }); }
+        if (best) { best.cb.used = true; assignments.push({ rb: rb, cb: best.cb, sc: best.sc, mutualLeg: best.mutualLeg, warns: best.warns, cross: best.cross }); }
         else allMatched = false;
       });
 
       if (allMatched && assignments.length) {
         var score = 0;
+        var crossClass = assignments.some(function (a) { return a.cross; });
         // Did C also flag the requester's selected dates as their wanted-off?
         var cMutualOnReq = cWanted && selIdxs.some(function (i) { return cWanted[i]; });
         assignments.forEach(function (a) {
@@ -471,13 +482,17 @@
           }
         });
         // Classify mutual: strong = both directions, soft = one direction.
+        // (Cross-type swaps are never treated as mutual — they belong in the
+        // less-preferable section regardless.)
         var anyLegMutual = assignments.some(function (a) { return a.mutualLeg; });
         var mutual = null;
-        if (cMutualOnReq && anyLegMutual) mutual = "strong";
-        else if (cMutualOnReq || anyLegMutual) mutual = "soft";
-        if (mutual === "strong") score -= 1000; // top-rank
-        else if (mutual === "soft") score -= 50;
-        swaps.push({ label: C.label, grade: C.grade, dept: C.dept, assignments: assignments, score: score, warnings: warnings, mutual: mutual });
+        if (!crossClass) {
+          if (cMutualOnReq && anyLegMutual) mutual = "strong";
+          else if (cMutualOnReq || anyLegMutual) mutual = "soft";
+          if (mutual === "strong") score -= 1000; // top-rank
+          else if (mutual === "soft") score -= 50;
+        }
+        swaps.push({ label: C.label, grade: C.grade, dept: C.dept, assignments: assignments, score: score, warnings: warnings, mutual: mutual, crossClass: crossClass });
       } else {
         // Cover is legal (checked above) but no clean return shift exists.
         coverOnly.push({ label: C.label, grade: C.grade, dept: C.dept, warnings: coverAssess.warnings || [] });
@@ -485,7 +500,9 @@
     });
 
     function rank(a, b) {
-      // mutual swaps always sort above non-mutual (even with warnings)
+      // like-for-like always sorts above cross-type
+      if (!!a.crossClass !== !!b.crossClass) return a.crossClass ? 1 : -1;
+      // mutual swaps sort above non-mutual (within like-for-like)
       var am = a.mutual === "strong" ? 2 : a.mutual === "soft" ? 1 : 0;
       var bm = b.mutual === "strong" ? 2 : b.mutual === "soft" ? 1 : 0;
       if (am !== bm) return bm - am;
@@ -500,15 +517,17 @@
 
     var chains = [], chainsReason = null;
     var B2B = "This would mean working back-to-back weekends";
+    // Three-way is a like-for-like fallback, so it's judged against the
+    // like-for-like direct swaps only — cross-type options don't suppress it.
+    var likeForLike = swaps.filter(function (s) { return !s.crossClass; });
     if (reqBlocks.length === 1) {
-      if (!swaps.length) {
-        // No direct swap at all — three-way is the fallback.
+      if (!likeForLike.length) {
+        // No like-for-like direct swap — three-way is the fallback.
         chains = this._findChains(reqLabel, reqBlocks[0], sel, unavail, prefs);
         if (chains.length) chainsReason = "no-direct";
-      } else if (swaps.every(function (s) { return s.warnings.indexOf(B2B) >= 0; })) {
-        // Direct swaps exist but EVERY one would put someone on back-to-back
-        // weekends. Look for a three-way route where nobody does — and only
-        // offer chains that actually achieve that.
+      } else if (likeForLike.every(function (s) { return s.warnings.indexOf(B2B) >= 0; })) {
+        // Every like-for-like swap would put someone on back-to-back weekends.
+        // Look for a three-way route where nobody does.
         chains = this._findChains(reqLabel, reqBlocks[0], sel, unavail, prefs)
           .filter(function (ch) { return ch.warnings.indexOf(B2B) < 0; });
         if (chains.length) chainsReason = "avoid-b2b";
@@ -1445,8 +1464,10 @@
       }
     } else {
       // Single-block view
-      var mutualSwaps = res.swaps.filter(function (s) { return s.mutual; });
-      var otherSwaps = res.swaps.filter(function (s) { return !s.mutual; });
+      var lfl = res.swaps.filter(function (s) { return !s.crossClass; });
+      var crossSwaps = res.swaps.filter(function (s) { return s.crossClass; });
+      var mutualSwaps = lfl.filter(function (s) { return s.mutual; });
+      var otherSwaps = lfl.filter(function (s) { return !s.mutual; });
 
       // When every direct swap means back-to-back weekends, the three-way
       // routes that avoid it are the better recommendation — show them first.
@@ -1469,23 +1490,28 @@
         otherSwaps.slice(0, 8).forEach(function (sw, i) { root.appendChild(swapCard(sw, i === 0 && !mutualSwaps.length && res.chainsReason !== "avoid-b2b")); });
       }
 
-      if (!res.swaps.length) {
-        if (res.chains && res.chains.length) {
-          var n0 = el("div", "card note");
-          n0.appendChild(el("strong", null, "No direct two-way swap available."));
-          n0.appendChild(el("p", null, "Try one of the three-way swaps below — the loop closes so everyone keeps the same number of on-calls."));
-          root.appendChild(n0);
-        } else {
-          var none = el("div", "card note");
-          none.appendChild(el("strong", null, "No clean swap found."));
-          none.appendChild(el("p", null, "Nobody can take all the days you've selected and hand back an equivalent shift. The people below could cover your shift — your rota team can arrange a return manually."));
-          root.appendChild(none);
-        }
+      if (!lfl.length && !(res.chains && res.chains.length)) {
+        var none = el("div", "card note");
+        none.appendChild(el("strong", null, "No like-for-like swap found."));
+        none.appendChild(el("p", null, crossSwaps.length
+          ? "Nobody can hand back the same type of shift. There are cross-type options below if you're willing to take a different kind of shift, or the people further down could cover your shift for the rota team to arrange a return."
+          : "Nobody can take all the days you've selected and hand back an equivalent shift. The people below could cover your shift — your rota team can arrange a return manually."));
+        root.appendChild(none);
+      } else if (!lfl.length && res.chains && res.chains.length && res.chainsReason !== "avoid-b2b") {
+        var n0 = el("div", "card note");
+        n0.appendChild(el("strong", null, "No direct two-way swap available."));
+        n0.appendChild(el("p", null, "Try one of the three-way swaps below — the loop closes so everyone keeps the same number of on-calls."));
+        root.appendChild(n0);
       }
 
       if (res.chains && res.chains.length && res.chainsReason !== "avoid-b2b") {
         root.appendChild(el("h3", "res-h", "Three-way swaps"));
-        res.chains.slice(0, 5).forEach(function (ch, i) { root.appendChild(chainCard(ch, !res.swaps.length && i === 0)); });
+        res.chains.slice(0, 5).forEach(function (ch, i) { root.appendChild(chainCard(ch, !lfl.length && i === 0)); });
+      }
+
+      // Cross-type swaps: lowest priority, collapsed by default.
+      if (crossSwaps.length) {
+        root.appendChild(crossSection(crossSwaps));
       }
 
       if (res.coverOnly.length) {
@@ -1495,6 +1521,21 @@
     }
 
     root.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  // Collapsible section for cross-type (different shift class) swaps — the
+  // last-resort option when you're willing to take a less favourable shift.
+  function crossSection(crossSwaps) {
+    var det = el("details", "combined-fallback cross-fallback");
+    var sum = el("summary", null,
+      "Cross-type swaps — less preferable (" + crossSwaps.length +
+      (crossSwaps.length === 1 ? " option" : " options") + ")");
+    det.appendChild(sum);
+    var intro = el("p", "perblock-intro",
+      "These trade a different kind of shift (for example, weekend nights for weekend days). All the usual rest and safety rules still apply — but you'd be taking a less favourable shift, so only use these if you're set on getting the dates off.");
+    det.appendChild(intro);
+    crossSwaps.slice(0, 6).forEach(function (sw) { det.appendChild(swapCard(sw, false)); });
+    return det;
   }
 
   function summaryCard(reqBlocks) {
@@ -1525,10 +1566,12 @@
     header.appendChild(label);
     wrap.appendChild(header);
 
-    var mutuals = pb.swaps.filter(function (s) { return s.mutual; });
-    var others = pb.swaps.filter(function (s) { return !s.mutual; });
+    var lfl = pb.swaps.filter(function (s) { return !s.crossClass; });
+    var crossSwaps = pb.swaps.filter(function (s) { return s.crossClass; });
+    var mutuals = lfl.filter(function (s) { return s.mutual; });
+    var others = lfl.filter(function (s) { return !s.mutual; });
 
-    // If every direct swap for this block means back-to-back weekends,
+    // If every like-for-like swap for this block means back-to-back weekends,
     // lead with the three-way routes that avoid it.
     var avoidB2b = pb.chainsReason === "avoid-b2b" && pb.chains && pb.chains.length;
     if (avoidB2b) {
@@ -1544,16 +1587,19 @@
         wrap.appendChild(swapCard(sw, !mutuals.length && i === 0 && !avoidB2b));
       });
     }
-    if (!pb.swaps.length) {
+    if (!lfl.length) {
       if (pb.chains && pb.chains.length && !avoidB2b) {
         wrap.appendChild(el("p", "perblock-note", "No direct two-way swap for this block — see three-way options below."));
         pb.chains.slice(0, 3).forEach(function (ch, i) { wrap.appendChild(chainCard(ch, i === 0)); });
-      } else if (pb.coverOnly && pb.coverOnly.length) {
+      } else if (!crossSwaps.length && pb.coverOnly && pb.coverOnly.length) {
         wrap.appendChild(el("p", "perblock-note", "No clean swap — these people could cover but with no return shift."));
         pb.coverOnly.slice(0, 3).forEach(function (c) { wrap.appendChild(coverCard(c)); });
-      } else if (!avoidB2b) {
+      } else if (!avoidB2b && !crossSwaps.length) {
         wrap.appendChild(el("p", "perblock-note", "No match found for this block."));
       }
+    }
+    if (crossSwaps.length) {
+      wrap.appendChild(crossSection(crossSwaps));
     }
     return wrap;
   }
@@ -1581,10 +1627,12 @@
   function swapCard(sw, top) {
     var cls = "card swap";
     if (top) cls += " top";
-    if (sw.mutual === "strong") cls += " mutual-strong";
+    if (sw.crossClass) cls += " cross";
+    else if (sw.mutual === "strong") cls += " mutual-strong";
     else if (sw.mutual === "soft") cls += " mutual-soft";
     var c = el("div", cls);
-    if (sw.mutual === "strong") c.appendChild(el("div", "ribbon mutual", "Mutual swap"));
+    if (sw.crossClass) c.appendChild(el("div", "ribbon cross", "Cross-type"));
+    else if (sw.mutual === "strong") c.appendChild(el("div", "ribbon mutual", "Mutual swap"));
     else if (sw.mutual === "soft") c.appendChild(el("div", "ribbon mutual-soft", "They're also looking"));
     else if (top) c.appendChild(el("div", "ribbon", "Best match"));
     var head = el("div", "swap-head");
