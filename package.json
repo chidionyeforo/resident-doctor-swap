@@ -1,6 +1,6 @@
 {
   "name": "resident-doctor-swap",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "private": true,
   "description": "Static on-call swap finder with a shared availability store (Netlify Blobs).",
   "type": "module",

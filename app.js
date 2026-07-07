@@ -221,16 +221,6 @@
         }
       }
     }
-    // Night-into-LTFT rule: a night shift runs 20:30–09:30, finishing the NEXT
-    // morning. If tomorrow is this person's LTFT day, working tonight's night
-    // would mean working into their LTFT day — never allowed. (A day/E/ward
-    // shift on the same date is fine, since it ends before midnight.)
-    if (shiftCls === "NIGHT") {
-      var nx = this.cell(label, idx + 1);
-      if (nx.s === "LTFT") {
-        return { ok: false, reason: "night shift would run into their LTFT day on " + (this.data.dates[idx + 1] ? this.data.dates[idx + 1].iso : "the next day") + " (nights finish 09:30 the next morning)" };
-      }
-    }
     return { ok: true };
   };
 
@@ -456,15 +446,55 @@
 
           var sc = equity(rb, cb) + reqAssess.penalty + candAssess.penalty;
           var lenWarns = reqAssess.warnings.concat(candAssess.warnings);
-          if (cross) {
-            sc += 500;
-            lenWarns = lenWarns.concat(["Cross-type swap: you'd take a " + CLASS_LABEL[cb.cls] + " in place of your " + CLASS_LABEL[rb.cls] + " — allowed, but less preferable"]);
-          }
+          if (cross) sc += 500; // cross-type always ranks below like-for-like
           var mutualLeg = cb.idxs.some(function (i) { return myWanted[i]; });
           if (mutualLeg) sc -= 100; // dominate ordering
           if (!best || sc < best.sc) best = { cb: cb, sc: sc, mutualLeg: mutualLeg, warns: lenWarns, cross: cross };
         });
-        if (best) { best.cb.used = true; assignments.push({ rb: rb, cb: best.cb, sc: best.sc, mutualLeg: best.mutualLeg, warns: best.warns, cross: best.cross }); }
+
+        // Combined return: if a single equal-length block isn't ideal, also
+        // try giving back TWO smaller blocks that sum to the same shift count —
+        // e.g. 3 nights for (2 nights + 1 E). Only for single-block requests.
+        // Constraint: never leave anyone doing a lone single NIGHT (a 1-night
+        // block can't be part of the combination). A single E/Ward/Day is fine.
+        if (reqBlocks.length === 1 && rb.len >= 3) {
+          var avail = cBlocks.filter(function (b) {
+            var noLoneNight = !(b.cls === "NIGHT" && b.len < 2);
+            return !b.used && b.len < rb.len && noLoneNight &&
+                   b.idxs.every(function (i) { return !unavail[i] && !sel[i]; });
+          });
+          for (var x = 0; x < avail.length; x++) {
+            for (var y = x + 1; y < avail.length; y++) {
+              var b1 = avail[x], b2 = avail[y];
+              if (b1.len + b2.len !== rb.len) continue;
+              if (b1.idxs.some(function (i) { return b2.idxs.indexOf(i) >= 0; })) continue;
+              var comboIdxs = b1.idxs.concat(b2.idxs);
+              var comboAdd = comboIdxs.map(function (i) { return { idx: i, cls: shiftClass(self.cell(cl, i).v) }; });
+              // Requester takes both blocks (giving up their single block)
+              var ra = self.assessPlacement(reqLabel, comboAdd, selIdxs, null);
+              if (!ra.ok) continue;
+              // Candidate takes the request block, gives away both blocks
+              var ca = self.assessPlacement(cl, rbAdd, comboIdxs, cPref);
+              if (!ca.ok) continue;
+              var csc = equity(rb, b1) + equity(rb, b2) + ra.penalty + ca.penalty
+                      + 500 /* combined is always a cross-ish last resort */;
+              if (!best || csc < best.sc) {
+                best = { combo: [b1, b2], sc: csc, mutualLeg: false,
+                         warns: ra.warnings.concat(ca.warnings), cross: true, combined: true };
+              }
+            }
+          }
+        }
+
+        if (best) {
+          if (best.combo) {
+            best.combo.forEach(function (b) { b.used = true; });
+            assignments.push({ rb: rb, combo: best.combo, sc: best.sc, warns: best.warns, cross: true, combined: true });
+          } else {
+            best.cb.used = true;
+            assignments.push({ rb: rb, cb: best.cb, sc: best.sc, mutualLeg: best.mutualLeg, warns: best.warns, cross: best.cross });
+          }
+        }
         else allMatched = false;
       });
 
@@ -476,7 +506,7 @@
         assignments.forEach(function (a) {
           score += a.sc;
           (a.warns || []).forEach(function (w) { if (warnings.indexOf(w) < 0) warnings.push(w); });
-          if (!restMatches(a.rb, a.cb)) {
+          if (!a.combined && a.cb && !restMatches(a.rb, a.cb)) {
             warnings.push("Rest days either side differ (" + a.rb.restBeforeIdxs.length + "/" + a.rb.restAfterIdxs.length +
               " vs " + a.cb.restBeforeIdxs.length + "/" + a.cb.restAfterIdxs.length + ") — the off days travel with the shift, so one of you changes rest");
           }
@@ -1646,8 +1676,17 @@
       ex.appendChild(legRow("They take", a.rb.idxs, state.person));
       var rt1 = restTravel(a.rb); if (rt1) ex.appendChild(el("div", "rest-travel", rt1));
       ex.appendChild(el("div", "swap-arrow", "⇅"));
-      ex.appendChild(legRow("You take", a.cb.idxs, sw.label));
-      var rt2 = restTravel(a.cb); if (rt2) ex.appendChild(el("div", "rest-travel", rt2));
+      if (a.combined && a.combo) {
+        // Return is split across two blocks — show each with a "+" between.
+        a.combo.forEach(function (b, bi) {
+          if (bi > 0) ex.appendChild(el("div", "combo-plus", "＋ and"));
+          ex.appendChild(legRow(bi === 0 ? "You take" : "", b.idxs, sw.label));
+          var rt = restTravel(b); if (rt) ex.appendChild(el("div", "rest-travel", rt));
+        });
+      } else {
+        ex.appendChild(legRow("You take", a.cb.idxs, sw.label));
+        var rt2 = restTravel(a.cb); if (rt2) ex.appendChild(el("div", "rest-travel", rt2));
+      }
       c.appendChild(ex);
     });
 
@@ -1749,7 +1788,13 @@
       opts.assignments.forEach(function (a) {
         var cls = CLASS_LABEL[a.rb.cls];
         lines.push("• You'd take my " + cls + " — " + emailDates(a.rb.idxs));
-        lines.push("• In return, I'd take your " + cls + " — " + emailDates(a.cb.idxs));
+        if (a.combined && a.combo) {
+          a.combo.forEach(function (b) {
+            lines.push("• In return, I'd take your " + CLASS_LABEL[b.cls] + " — " + emailDates(b.idxs));
+          });
+        } else {
+          lines.push("• In return, I'd take your " + CLASS_LABEL[a.cb.cls] + " — " + emailDates(a.cb.idxs));
+        }
       });
       lines.push("");
       lines.push("If that works, let me know and we'll send it to the rota team to make official.");
@@ -1793,7 +1838,13 @@
       opts.assignments.forEach(function (a) {
         var cls = CLASS_LABEL[a.rb.cls];
         lines.push("• (name) takes my " + cls + ": " + emailDates(a.rb.idxs));
-        lines.push("• I take their " + cls + ": " + emailDates(a.cb.idxs));
+        if (a.combined && a.combo) {
+          a.combo.forEach(function (b) {
+            lines.push("• I take their " + CLASS_LABEL[b.cls] + ": " + emailDates(b.idxs));
+          });
+        } else {
+          lines.push("• I take their " + CLASS_LABEL[a.cb.cls] + ": " + emailDates(a.cb.idxs));
+        }
       });
       lines.push("");
       lines.push("Thanks,");

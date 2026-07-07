@@ -1,6 +1,6 @@
 # Resident Doctor Swap
 
-**Version 1.7.0** · Rota period 05 Aug 2026 – 02 Feb 2027
+**Version 1.8.0** · Rota period 05 Aug 2026 – 02 Feb 2027
 
 A small static web app that reads your SpR on-call rota and suggests the **best person to ask for a shift swap** when you want a day (or block of days) off.
 
@@ -9,6 +9,8 @@ Everything runs in the browser. There's no server, no database, no login for rea
 The version number appears in the footer of the app itself so anyone using it can confirm what they're on.
 
 ## Changelog
+
+- **v1.8.0** — **Combined-return swaps:** a block can now be swapped for two smaller blocks that add up to the same shift count (e.g. 3 nights for 2 nights + 1 evening/ward), so someone stuck with an awkward block has more routes to a swap. Never leaves anyone doing a lone single night; every rest and safety rule still applies; ranked as a lower-preference option. **Removed the night-before-LTFT rule** — the live rota shows this is worked in practice, so it no longer blocks swaps. **Removed the "less preferable" wording** on cross-type swaps (the badge already makes it clear).
 
 - **v1.7.0** — **Cross-type swaps** as an explicit last-resort option. When you're set on getting dates off and no like-for-like partner exists, the app will now offer swaps into a different shift type (for example, weekend nights for weekend days). They appear in a collapsed "Cross-type swaps — less preferable" section below every like-for-like and three-way option, each carrying a "Cross-type" badge and a plain warning. Equal shift counts and every rest/safety rule still apply; only the like-for-like requirement is relaxed. Cross-type swaps never rank above like-for-like and are never treated as mutual matches. Three-way swaps remain strictly like-for-like.
 
