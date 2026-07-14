@@ -1,6 +1,6 @@
 # Resident Doctor Swap
 
-**Version 1.9.0** · Rota period 05 Aug 2026 – 02 Feb 2027
+**Version 2.0.0** · Rota period 05 Aug 2026 – 02 Feb 2027
 
 A small static web app that reads your SpR on-call rota and suggests the **best person to ask for a shift swap** when you want a day (or block of days) off.
 
@@ -9,6 +9,8 @@ Everything runs in the browser. There's no server, no database, no login for rea
 The version number appears in the footer of the app itself so anyone using it can confirm what they're on.
 
 ## Changelog
+
+- **v2.0.0** — **Feedback tool**: a footer link always available to send bugs/suggestions/comments straight to the admin dashboard. **Star rating flow**: after 5 searches, a one-time 1-5 star prompt appears; below 4 stars invites a comment. **Admin dashboard**, now gated behind a separate shared admin PIN: audit trail, roster record (slot/grade/specialty, survives renumbering), feedback & ratings list, unavailability store (live view of who's flagged what), and success metrics (swaps proposed vs confirmed-in-rota, comparing against a snapshot taken at each rota refresh, plus a manual baseline field for last year's raw request count). **Rota refreshed** from an updated spreadsheet — see notes below on the identity-matching approach used. **Store reset** for a clean launch (see below).
 
 - **v1.9.0** — Weekend **day and ward shifts now count as the same type** for swaps (a weekend day-for-ward is a normal like-for-like); only a night traded for a daytime shift is a genuine cross-type. **Removed rest-day notifications** throughout (everyone knows their own rest rules). **All dates now dd/mm/yyyy** (UK numeric) everywhere — cards, emails, calendar, admin. **Working-pattern preference:** two full-timers, or two LTFT people who share an LTFT day, rank above a full-timer/LTFT pairing (still allowed, just less tidy). **Copy-email button fixed** — copies the actual email text reliably, no longer a link. **Roster record** added to admin: a dated snapshot of every slot's grade/specialty keyed to its permanent spreadsheet column, so there's always a note of who held which slot when the rota changes. **Removed the night-before-LTFT block** (the live rota shows it's worked in practice).
 
@@ -180,3 +182,12 @@ A few things the engine handles automatically that are worth knowing:
 - **Excluded from candidates**: the ActingUp column and NWD-only slots hold no on-calls, so they're never offered as swap partners.
 
 If anything looks wrong (someone suggested who shouldn't be, or missing from suggestions when they should be), tell me the slot and date and I'll tune the logic.
+
+
+## How rota updates preserve identity
+
+When the rota changes, the spreadsheet's own column letters can shift — for example, deleting a column (someone leaving) shifts every column to its right by one letter. Since PINs and unavailability are keyed to the spreadsheet column, a naive re-parse would silently reassign people's stored data to the wrong slot.
+
+To avoid this, each rota refresh matches people between the old and new spreadsheet by their actual on-call pattern (grade, specialty, and which specific dates they're on E/Day/Night/Ward), not by column position. A continuing person keeps their original stable id — and therefore their PIN and unavailability — regardless of where their column physically sits in the new file. Only genuinely new starters get a freshly minted id.
+
+One limitation worth knowing: protected/blocked-day formatting (black-outlined cells) can't be read from the spreadsheet file itself — Excel's border styling doesn't survive into the parsing library. Protected days are carried forward automatically for any date that already existed in the previous version; genuinely new dates need a manual top-up, which the admin dashboard's roster and unavailability views are designed to support.

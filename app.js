@@ -802,12 +802,17 @@
   // ---- shared preference store -------------------------------------------
   var Store = {
     ENDPOINT: "/.netlify/functions/prefs",
-    CACHE: "rds_prefs_cache_id",
-    AUDIT_CACHE: "rds_audit_cache_id",
-    PENDING: "rds_prefs_pending_id",
+    CACHE: "rds_prefs_cache_launch",
+    AUDIT_CACHE: "rds_audit_cache_launch",
+    FEEDBACK_CACHE: "rds_feedback_cache_launch",
+    META_CACHE: "rds_meta_cache_launch",
+    PENDING: "rds_prefs_pending_launch",
     shared: false,
     auditLog: [],
-    // Returns object of {label: {unavail, wantedOff, pinHash, updated}}; populates this.auditLog
+    feedbackLog: [],
+    meta: {},
+    // Returns object of {id: {unavail, wantedOff, pinHash, updated, ...}}; also
+    // populates this.auditLog, this.feedbackLog, this.meta.
     loadAll: function (slim) {
       var self = this;
       var url = this.ENDPOINT + (slim ? "?slim=1" : "");
@@ -815,13 +820,11 @@
         .then(function (r) { if (!r.ok) throw new Error("no backend"); return r.json(); })
         .then(function (j) {
           self.shared = true;
-          // Shape-tolerant: current backend returns {prefs, audit}; an older
-          // deployed function returns the flat prefs map directly. Reading
-          // the wrong shape here made saved prefs silently vanish on other
-          // devices, so accept both.
-          var prefs, audit;
-          if (j && j.prefs !== undefined) { prefs = j.prefs || {}; audit = j.audit || []; }
-          else { prefs = j || {}; audit = []; }
+          // Shape-tolerant: accept an older deploy's flat-prefs-only response too.
+          var prefs, audit, feedback, meta;
+          if (j && j.prefs !== undefined) {
+            prefs = j.prefs || {}; audit = j.audit || []; feedback = j.feedback || []; meta = j.meta || {};
+          } else { prefs = j || {}; audit = []; feedback = []; meta = {}; }
           // Reconcile: if this device has prefs that never reached the server
           // (saved while offline / backend briefly down), push them up now
           // rather than letting the server copy silently win.
@@ -834,21 +837,33 @@
           } catch (e) {}
           try { localStorage.setItem(self.CACHE, JSON.stringify(prefs)); } catch (e) {}
           try { localStorage.setItem(self.AUDIT_CACHE, JSON.stringify(audit)); } catch (e) {}
-          self.auditLog = audit;
+          try { localStorage.setItem(self.FEEDBACK_CACHE, JSON.stringify(feedback)); } catch (e) {}
+          try { localStorage.setItem(self.META_CACHE, JSON.stringify(meta)); } catch (e) {}
+          self.auditLog = audit; self.feedbackLog = feedback; self.meta = meta;
           return prefs;
         })
         .catch(function () {
           self.shared = false;
           try { self.auditLog = JSON.parse(localStorage.getItem(self.AUDIT_CACHE) || "[]"); } catch (e) { self.auditLog = []; }
+          try { self.feedbackLog = JSON.parse(localStorage.getItem(self.FEEDBACK_CACHE) || "[]"); } catch (e) { self.feedbackLog = []; }
+          try { self.meta = JSON.parse(localStorage.getItem(self.META_CACHE) || "{}"); } catch (e) { self.meta = {}; }
           try { return JSON.parse(localStorage.getItem(self.CACHE) || "{}"); } catch (e) { return {}; }
         });
     },
     save: function (label, prefs) {
       var self = this;
-      // optimistic local cache update so it survives a reload either way
+      // Merge into the local cache, don't overwrite — callers routinely save
+      // partial prefs objects (e.g. publishWantedOff only sets unavail/wantedOff),
+      // and the backend already preserves omitted fields like pinHash and
+      // searchCount via its own read-merge-write. The local cache needs the
+      // same discipline, or a partial save silently erases those fields from
+      // the offline fallback (this was actually happening: every search reset
+      // its own searchCount because the parallel publishWantedOff() call was
+      // clobbering it in the cache before the increment could be read back).
       try {
         var all = JSON.parse(localStorage.getItem(self.CACHE) || "{}");
-        all[label] = prefs;
+        var existing = all[label] || {};
+        all[label] = Object.assign({}, existing, prefs);
         localStorage.setItem(self.CACHE, JSON.stringify(all));
       } catch (e) {}
       return fetch(this.ENDPOINT, {
@@ -890,6 +905,38 @@
       return fetch(this.ENDPOINT, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ event: event })
+      }).then(function (r) { return r.ok; })
+        .catch(function () { return false; });
+    },
+    logFeedback: function (entry) {
+      var self = this;
+      var full = Object.assign({ ts: new Date().toISOString() }, entry);
+      self.feedbackLog.unshift(full);
+      if (self.feedbackLog.length > 1000) self.feedbackLog.length = 1000;
+      try { localStorage.setItem(self.FEEDBACK_CACHE, JSON.stringify(self.feedbackLog)); } catch (e) {}
+      return fetch(this.ENDPOINT, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ feedback: entry })
+      }).then(function (r) { return r.ok; })
+        .catch(function () { return false; });
+    },
+    saveMeta: function (partial) {
+      var self = this;
+      self.meta = Object.assign({}, self.meta, partial);
+      try { localStorage.setItem(self.META_CACHE, JSON.stringify(self.meta)); } catch (e) {}
+      return fetch(this.ENDPOINT, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ meta: partial })
+      }).then(function (r) { return r.ok; })
+        .catch(function () { return false; });
+    },
+    setAdminPin: function (hash) {
+      var self = this;
+      self.meta = Object.assign({}, self.meta, { adminPinHash: hash });
+      try { localStorage.setItem(self.META_CACHE, JSON.stringify(self.meta)); } catch (e) {}
+      return fetch(this.ENDPOINT, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ adminPinHash: hash })
       }).then(function (r) { return r.ok; })
         .catch(function () { return false; });
     }
@@ -1513,8 +1560,160 @@
       renderResults(res);
       $("#find").disabled = false;
       label.textContent = old;
+      recordSearchAndMaybeAskForRating();
     });
   });
+
+  // Tracks how many searches this person has run (stored server-side against
+  // their stable id, so it's consistent across devices) and, once they've hit
+  // the threshold, offers the one-time star rating prompt.
+  function recordSearchAndMaybeAskForRating() {
+    var pid = personId(); if (!pid) return;
+    var prev = allPrefs[pid] || {};
+    var count = (prev.searchCount || 0) + 1;
+    var entry = {
+      unavail: prev.unavail || [],
+      wantedOff: prev.wantedOff || [],
+      searchCount: count,
+      ratedPromptShown: !!prev.ratedPromptShown,
+      ratingSnoozeUntil: prev.ratingSnoozeUntil || null,
+      updated: new Date().toISOString().slice(0, 10)
+    };
+    allPrefs[pid] = entry;
+    Store.save(pid, entry);
+
+    var RATING_THRESHOLD = 5;
+    var alreadyRated = !!entry.ratedPromptShown;
+    var snoozed = entry.ratingSnoozeUntil != null && count < entry.ratingSnoozeUntil;
+    if (!alreadyRated && !snoozed && count >= RATING_THRESHOLD) {
+      openRatingModal();
+    }
+  }
+
+  // ---- star rating modal (auto-triggered) ----------------------------------
+  var ratingState = { stars: 0 };
+  function openRatingModal() {
+    var m = $("#rating-modal"); if (!m) return;
+    ratingState.stars = 0;
+    document.querySelectorAll("#star-row .star-btn").forEach(function (b) { b.classList.remove("on"); });
+    $("#rating-followup").classList.add("hide");
+    $("#rating-text").value = "";
+    $("#rating-submit").classList.add("hide");
+    m.classList.add("open");
+    document.body.style.overflow = "hidden";
+  }
+  function closeRatingModal() {
+    $("#rating-modal").classList.remove("open");
+    document.body.style.overflow = "";
+  }
+  // Snoozing (dismiss without rating) asks again after 5 more searches rather
+  // than never — only an actual submitted rating permanently silences it.
+  function snoozeRating() {
+    var pid = personId();
+    if (pid) {
+      var prev = allPrefs[pid] || {};
+      var count = prev.searchCount || 0;
+      var entry = {
+        unavail: prev.unavail || [], wantedOff: prev.wantedOff || [],
+        searchCount: count, ratedPromptShown: !!prev.ratedPromptShown,
+        ratingSnoozeUntil: count + 5,
+        updated: new Date().toISOString().slice(0, 10)
+      };
+      allPrefs[pid] = entry;
+      Store.save(pid, entry);
+    }
+    closeRatingModal();
+  }
+  function submitRating() {
+    if (!ratingState.stars) { snoozeRating(); return; }
+    var pid = personId();
+    Store.logFeedback({
+      slot: pid || undefined,
+      slotLabel: state.person || undefined,
+      type: "rating",
+      stars: ratingState.stars,
+      text: ($("#rating-text").value || "").trim()
+    });
+    if (pid) {
+      var prev = allPrefs[pid] || {};
+      var entry = {
+        unavail: prev.unavail || [], wantedOff: prev.wantedOff || [],
+        searchCount: prev.searchCount || 0, ratedPromptShown: true,
+        ratingSnoozeUntil: prev.ratingSnoozeUntil || null,
+        updated: new Date().toISOString().slice(0, 10)
+      };
+      allPrefs[pid] = entry;
+      Store.save(pid, entry);
+    }
+    closeRatingModal();
+  }
+  if ($("#star-row")) {
+    document.querySelectorAll("#star-row .star-btn").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var n = +btn.dataset.star;
+        ratingState.stars = n;
+        document.querySelectorAll("#star-row .star-btn").forEach(function (b) {
+          b.classList.toggle("on", +b.dataset.star <= n);
+        });
+        $("#rating-followup").classList.remove("hide");
+        $("#rating-followup-text").textContent = n >= 4
+          ? "Glad it's helping — anything that could be even better?"
+          : "Sorry to hear that — what would make it better?";
+        $("#rating-submit").classList.remove("hide");
+      });
+    });
+  }
+  if ($("#rating-dismiss")) $("#rating-dismiss").addEventListener("click", snoozeRating);
+  if ($("#rating-submit")) $("#rating-submit").addEventListener("click", submitRating);
+  if ($("#rating-modal")) {
+    $("#rating-modal").addEventListener("click", function (e) { if (e.target === $("#rating-modal")) snoozeRating(); });
+  }
+
+  // ---- feedback modal (always available, footer entry point) ---------------
+  function openFeedbackModal() {
+    var m = $("#feedback-modal"); if (!m) return;
+    $("#feedback-text").value = "";
+    $("#feedback-msg").textContent = "";
+    $("#feedback-msg").style.color = "";
+    document.querySelectorAll("#feedback-type-chips .filter-chip").forEach(function (c, i) {
+      c.classList.toggle("active", i === 0);
+    });
+    m.classList.add("open");
+    document.body.style.overflow = "hidden";
+  }
+  function closeFeedbackModal() {
+    $("#feedback-modal").classList.remove("open");
+    document.body.style.overflow = "";
+  }
+  if ($("#feedback-open")) $("#feedback-open").addEventListener("click", openFeedbackModal);
+  if ($("#feedback-cancel")) $("#feedback-cancel").addEventListener("click", closeFeedbackModal);
+  if ($("#feedback-close")) $("#feedback-close").addEventListener("click", closeFeedbackModal);
+  if ($("#feedback-modal")) {
+    $("#feedback-modal").addEventListener("click", function (e) { if (e.target === $("#feedback-modal")) closeFeedbackModal(); });
+  }
+  document.querySelectorAll("#feedback-type-chips .filter-chip").forEach(function (c) {
+    c.addEventListener("click", function () {
+      document.querySelectorAll("#feedback-type-chips .filter-chip").forEach(function (x) { x.classList.remove("active"); });
+      c.classList.add("active");
+    });
+  });
+  if ($("#feedback-submit")) {
+    $("#feedback-submit").addEventListener("click", function () {
+      var active = document.querySelector("#feedback-type-chips .filter-chip.active");
+      var type = active ? active.dataset.type : "suggestion";
+      var text = ($("#feedback-text").value || "").trim();
+      if (!text) { $("#feedback-msg").textContent = "Add a line so we know what to look at."; return; }
+      Store.logFeedback({
+        slot: personId() || undefined,
+        slotLabel: state.person || undefined,
+        type: type,
+        text: text
+      });
+      $("#feedback-msg").style.color = "var(--teal-dark)";
+      $("#feedback-msg").textContent = "Thanks — sent.";
+      setTimeout(closeFeedbackModal, 900);
+    });
+  }
 
   function renderResults(res) {
     var root = $("#results"); root.innerHTML = "";
@@ -1995,24 +2194,48 @@
     if (kind === "confirm" && $("#email-to").value) {
       try { localStorage.setItem("rds_rota_email", $("#email-to").value); state.rotaTeamEmail = $("#email-to").value; } catch (e) {}
     }
-    // Audit log: who drafted what email
+    // Audit log: who drafted what email, plus the full trade (every leg of
+    // the swap cycle, by stable id) so a future rota upload can check whether
+    // this specific proposed swap was actually confirmed.
     if (state.person) {
       var opts = $("#email-modal")._opts || {};
-      var dates = [];
+      var pid = personId();
+      var dates = [], trade = null;
       if (opts.assignments) {
+        var reqDates = [], partnerDates = [];
         opts.assignments.forEach(function (a) {
-          a.rb.idxs.forEach(function (i) { dates.push(data.dates[i].iso); });
+          a.rb.idxs.forEach(function (i) { reqDates.push(data.dates[i].iso); dates.push(data.dates[i].iso); });
+          if (a.combined && a.combo) {
+            a.combo.forEach(function (b) { b.idxs.forEach(function (i) { partnerDates.push(data.dates[i].iso); }); });
+          } else if (a.cb) {
+            a.cb.idxs.forEach(function (i) { partnerDates.push(data.dates[i].iso); });
+          }
         });
+        var partnerId = idByLabel[opts.partnerLabel];
+        if (pid && partnerId && reqDates.length && partnerDates.length) {
+          trade = [{ slot: pid, dates: reqDates }, { slot: partnerId, dates: partnerDates }];
+        }
       } else if (opts.chain) {
-        opts.chain.rb.idxs.forEach(function (i) { dates.push(data.dates[i].iso); });
+        var ch = opts.chain;
+        ch.rb.idxs.forEach(function (i) { dates.push(data.dates[i].iso); });
+        var cId = idByLabel[ch.C.label], dId = idByLabel[ch.D.label];
+        if (pid && cId && dId) {
+          trade = [
+            { slot: pid, dates: ch.rb.idxs.map(function (i) { return data.dates[i].iso; }) },
+            { slot: cId, dates: ch.cb.idxs.map(function (i) { return data.dates[i].iso; }) },
+            { slot: dId, dates: ch.db.idxs.map(function (i) { return data.dates[i].iso; }) }
+          ];
+        }
       }
-      Store.logEvent({
-        slot: state.person,
+      var event = {
+        slot: pid,
         action: kind === "ask" ? "draft_ask_email" : "draft_rota_email",
         partnerSlot: opts.partnerLabel || (opts.chain && opts.chain.C && opts.chain.C.label) || null,
         dates: dates,
         kind: opts.kind || (opts.chain ? "chain" : "direct")
-      });
+      };
+      if (trade) event.trade = trade;
+      Store.logEvent(event);
     }
     window.location.href = "mailto:" + to + "?subject=" + subject + "&body=" + body;
   });
@@ -2053,7 +2276,7 @@
 
     // Already remembered on this device?
     try {
-      var rem = localStorage.getItem("rds_verified_id_" + pid);
+      var rem = localStorage.getItem("rds_verified_launch_" + pid);
       if (rem === "1") {
         state.verifiedSlot = slot;
         renderLoginBadge();
@@ -2124,7 +2347,7 @@
           allPrefs[pid].pinHash = hash;
           rebuildPrefsMap();
           state.verifiedSlot = slot;
-          try { localStorage.setItem("rds_verified_id_" + pid, "1"); } catch (e) {}
+          try { localStorage.setItem("rds_verified_launch_" + pid, "1"); } catch (e) {}
           Store.logEvent({ slot: pid, action: "pin_set" });
           Store.logEvent({ slot: pid, action: "login" });
           closePinModal();
@@ -2139,7 +2362,7 @@
         var entry = allPrefs[pid] || {};
         if (entry.pinHash && entry.pinHash === hash) {
           state.verifiedSlot = slot;
-          try { localStorage.setItem("rds_verified_id_" + pid, "1"); } catch (e) {}
+          try { localStorage.setItem("rds_verified_launch_" + pid, "1"); } catch (e) {}
           Store.logEvent({ slot: pid, action: "login" });
           closePinModal();
           renderLoginBadge();
@@ -2163,7 +2386,7 @@
       el0.appendChild(el("span", null, "Slot " + state.person + " · verified"));
       var btn = el("button", null, "Log out");
       btn.addEventListener("click", function () {
-        try { localStorage.removeItem("rds_verified_id_" + personId()); } catch (e) {}
+        try { localStorage.removeItem("rds_verified_launch_" + personId()); } catch (e) {}
         state.verifiedSlot = null;
         Store.logEvent({ slot: personId(), action: "logout" });
         renderLoginBadge();
@@ -2181,6 +2404,71 @@
   // ---- admin mode (URL flag) ----------------------------------------------
   state.admin = new URLSearchParams(window.location.search).get("admin") === "1";
 
+  // Admin content is gated behind a shared admin PIN (separate from per-slot
+  // PINs) so ?admin=1 alone doesn't expose usage stats or the audit log to
+  // anyone who tries the URL. Same attribution-grade posture as slot PINs —
+  // not a hard security boundary, but stops casual access.
+  function checkAdminAccess() {
+    if (!state.admin) { var w = $("#admin-banner"); if (w) w.classList.add("hide"); return; }
+    try {
+      if (localStorage.getItem("rds_admin_verified") === "1") { renderAdminBanner(); return; }
+    } catch (e) {}
+    openAdminPinModal();
+  }
+  function openAdminPinModal() {
+    var m = $("#admin-pin-modal"); if (!m) return;
+    var firstTime = !(Store.meta && Store.meta.adminPinHash);
+    $("#admin-pin-title").textContent = firstTime ? "Set the admin PIN" : "Admin access";
+    $("#admin-pin-help").textContent = firstTime
+      ? "Set a PIN for admin access — share it only with whoever manages the rota. You'll need it once per device."
+      : "Enter the admin PIN to view usage stats, feedback, and the audit log.";
+    $("#admin-pin-input").value = ""; $("#admin-pin-confirm").value = "";
+    $("#admin-pin-confirm-row").classList.toggle("hide", !firstTime);
+    $("#admin-pin-msg").textContent = "";
+    m._firstTime = firstTime;
+    m.classList.add("open");
+    document.body.style.overflow = "hidden";
+    setTimeout(function () { $("#admin-pin-input").focus(); }, 100);
+  }
+  function closeAdminPinModal() {
+    $("#admin-pin-modal").classList.remove("open");
+    document.body.style.overflow = "";
+  }
+  if ($("#admin-pin-cancel")) $("#admin-pin-cancel").addEventListener("click", closeAdminPinModal);
+  if ($("#admin-pin-input")) {
+    $("#admin-pin-input").addEventListener("keydown", function (e) { if (e.key === "Enter") submitAdminPin(); });
+  }
+  if ($("#admin-pin-confirm")) {
+    $("#admin-pin-confirm").addEventListener("keydown", function (e) { if (e.key === "Enter") submitAdminPin(); });
+  }
+  if ($("#admin-pin-submit")) $("#admin-pin-submit").addEventListener("click", submitAdminPin);
+  function submitAdminPin() {
+    var m = $("#admin-pin-modal");
+    var pin = ($("#admin-pin-input").value || "").trim();
+    if (!/^\d{4,8}$/.test(pin)) { $("#admin-pin-msg").textContent = "PIN must be 4-8 digits."; return; }
+    if (m._firstTime) {
+      var confirm = ($("#admin-pin-confirm").value || "").trim();
+      if (pin !== confirm) { $("#admin-pin-msg").textContent = "PINs don't match."; return; }
+      sha256Hex("rds-admin:" + pin).then(function (hash) {
+        Store.setAdminPin(hash).then(function () {
+          try { localStorage.setItem("rds_admin_verified", "1"); } catch (e) {}
+          closeAdminPinModal();
+          renderAdminBanner();
+        });
+      });
+    } else {
+      sha256Hex("rds-admin:" + pin).then(function (hash) {
+        if (Store.meta && Store.meta.adminPinHash === hash) {
+          try { localStorage.setItem("rds_admin_verified", "1"); } catch (e) {}
+          closeAdminPinModal();
+          renderAdminBanner();
+        } else {
+          $("#admin-pin-msg").textContent = "Wrong PIN. Whoever set it up can reset it if needed.";
+        }
+      });
+    }
+  }
+
   function renderAdminBanner() {
     var wrap = $("#admin-banner"); if (!wrap) return;
     if (!state.admin) { wrap.classList.add("hide"); return; }
@@ -2194,6 +2482,9 @@
     Store.auditLog.forEach(function (e) { if (e.action === "login") distinctVerified[e.slot] = 1; });
     var distinctActed = {};
     Store.auditLog.forEach(function (e) { if (e.action === "draft_rota_email" || e.action === "draft_ask_email") distinctActed[e.slot] = 1; });
+    var proposedCount = Store.auditLog.filter(function (e) { return e.action === "draft_rota_email"; }).length;
+    var ratings = (Store.feedbackLog || []).filter(function (f) { return f.type === "rating" && f.stars; });
+    var avgRating = ratings.length ? (ratings.reduce(function (s, f) { return s + f.stars; }, 0) / ratings.length) : null;
 
     wrap.innerHTML = "";
     wrap.appendChild(el("div", "step-num", "Admin"));
@@ -2213,7 +2504,8 @@
     }
     addStat(Object.keys(distinctVerified).length, "Verified slots");
     addStat(Object.keys(distinctActed).length, "Active swappers");
-    addStat(Store.auditLog.length, "Events logged");
+    addStat(proposedCount, "Swaps proposed");
+    addStat(avgRating != null ? avgRating.toFixed(1) : "—", "Avg rating (" + ratings.length + ")");
     wrap.appendChild(stats);
 
     var auditBtn = el("button", "admin-btn", "View audit log");
@@ -2223,6 +2515,68 @@
     var rosterBtn = el("button", "admin-btn", "Roster record");
     rosterBtn.addEventListener("click", function () { openRosterModal(); });
     wrap.appendChild(rosterBtn);
+
+    var feedbackBtn = el("button", "admin-btn", "Feedback");
+    feedbackBtn.addEventListener("click", function () { openFeedbackListModal(); });
+    wrap.appendChild(feedbackBtn);
+
+    var metricsBtn = el("button", "admin-btn", "Success metrics");
+    metricsBtn.addEventListener("click", function () { openMetricsModal(); });
+    wrap.appendChild(metricsBtn);
+
+    var unavailBtn = el("button", "admin-btn", "Unavailability store");
+    unavailBtn.addEventListener("click", function () { openUnavailStoreModal(); });
+    wrap.appendChild(unavailBtn);
+  }
+
+  // Read-only admin view: every slot's currently-stored unavailable dates and
+  // any "currently looking" (wanted-off) dates, straight from the shared prefs
+  // store. Useful for the rota team to see who's flagged what without having
+  // to pick each slot individually.
+  function openUnavailStoreModal() {
+    var m = $("#audit-modal"); if (!m) return;
+    $("#audit-modal-title").textContent = "Unavailability store";
+    if ($("#audit-modal-help")) $("#audit-modal-help").textContent = "Live from the shared store. Only shows slots with something flagged.";
+    var list = $("#audit-list"); list.innerHTML = "";
+
+    var rows = data.staff.slice().sort(function (a, b) {
+      return ("" + a.label).localeCompare("" + b.label, undefined, { numeric: true });
+    }).map(function (s) {
+      var entry = allPrefs[s.id] || {};
+      return { s: s, unavail: entry.unavail || [], wantedOff: entry.wantedOff || [], updated: entry.updated };
+    }).filter(function (r) { return r.unavail.length || r.wantedOff.length; });
+
+    if (!rows.length) {
+      list.appendChild(el("p", "empty", "Nobody has flagged any unavailable or wanted-off dates yet."));
+    } else {
+      rows.forEach(function (r) {
+        var row = el("div", "audit-row");
+        row.style.flexWrap = "wrap";
+        var head = el("span", "audit-slot", "Slot " + r.s.label);
+        row.appendChild(head);
+        row.appendChild(el("span", null, (r.s.grade || "—") + " · " + (r.s.dept || "—")));
+        if (r.unavail.length) {
+          var u = el("div", null);
+          u.style.width = "100%"; u.style.fontSize = ".8rem"; u.style.color = "var(--ink-soft)"; u.style.marginTop = "4px";
+          u.textContent = "Unavailable: " + r.unavail.map(fmtShort).join(", ");
+          row.appendChild(u);
+        }
+        if (r.wantedOff.length) {
+          var w = el("div", null);
+          w.style.width = "100%"; w.style.fontSize = ".8rem"; w.style.color = "var(--coral-dark)"; w.style.marginTop = "2px";
+          w.textContent = "Currently looking: " + r.wantedOff.map(fmtShort).join(", ");
+          row.appendChild(w);
+        }
+        if (r.updated) {
+          var d = el("span", null, "updated " + ukNumeric(r.updated));
+          d.style.color = "var(--muted)"; d.style.fontSize = ".72rem"; d.style.width = "100%";
+          row.appendChild(d);
+        }
+        list.appendChild(row);
+      });
+    }
+    m.classList.add("open");
+    document.body.style.overflow = "hidden";
   }
 
   // Shows the slot → grade/specialty record, keyed by permanent column id,
@@ -2231,6 +2585,7 @@
   function openRosterModal() {
     var m = $("#audit-modal"); if (!m) return;
     $("#audit-modal-title").textContent = "Roster record";
+    if ($("#audit-modal-help")) $("#audit-modal-help").textContent = "Every slot's grade and specialty, keyed to its permanent spreadsheet column so it survives renumbering.";
     var list = $("#audit-list"); list.innerHTML = "";
     var history = (data.rosterHistory || []).slice().reverse();
     if (!history.length) {
@@ -2256,9 +2611,147 @@
     document.body.style.overflow = "hidden";
   }
 
+  // ---- feedback list viewer (admin) -----------------------------------------
+  function openFeedbackListModal() {
+    var m = $("#audit-modal"); if (!m) return;
+    $("#audit-modal-title").textContent = "Feedback & ratings";
+    if ($("#audit-modal-help")) $("#audit-modal-help").textContent = "Most recent first — from the footer link and the 5-uses rating prompt.";
+    var list = $("#audit-list"); list.innerHTML = "";
+    var entries = (Store.feedbackLog || []).slice(0, 200);
+    if (!entries.length) {
+      list.appendChild(el("p", "empty", "No feedback yet."));
+    } else {
+      var typeLabel = { bug: "Bug report", suggestion: "Suggestion", other: "Other", rating: "Rating" };
+      entries.forEach(function (f) {
+        var row = el("div", "audit-row");
+        row.appendChild(el("span", "audit-time", fmtAuditTime(f.ts)));
+        row.appendChild(el("span", "audit-slot", "Slot " + (f.slotLabel || labelById[f.slot] || f.slot || "—")));
+        if (f.stars) {
+          row.appendChild(el("span", "stars-mini", "★".repeat(f.stars) + "☆".repeat(5 - f.stars)));
+        } else {
+          row.appendChild(el("span", "audit-action", typeLabel[f.type] || f.type));
+        }
+        if (f.text) {
+          var t = el("span", null, f.text);
+          t.style.color = "var(--ink-soft)"; t.style.fontSize = ".82rem"; t.style.flexBasis = "100%"; t.style.width = "100%";
+          row.appendChild(t);
+        }
+        list.appendChild(row);
+      });
+    }
+    m.classList.add("open");
+    document.body.style.overflow = "hidden";
+  }
+
+  // ---- success metrics (admin) ----------------------------------------------
+  // Compares proposed swaps (from the audit log's "draft_rota_email" trade
+  // cycles) against the live rota vs the snapshot taken at the last rota
+  // update, to estimate how many proposed swaps actually made it into the
+  // official rota. Needs at least one prior snapshot to say anything — until
+  // the rota's been refreshed once since go-live, "confirmed" stays at 0.
+  function computeSwapMetrics() {
+    var snaps = data.oncallSnapshots || [];
+    var proposed = Store.auditLog.filter(function (e) { return e.action === "draft_rota_email" && e.trade; });
+    var result = { proposedCount: proposed.length, confirmedCount: 0, pendingCount: proposed.length, hasHistory: snaps.length > 0 };
+    if (!snaps.length) return result;
+
+    var prevSnap = snaps[snaps.length - 1];
+    var prevById = prevSnap.byId || {};
+    var currById = {};
+    data.staff.forEach(function (s) { currById[s.id] = data.grid[s.label]; });
+
+    var confirmed = 0;
+    proposed.forEach(function (e) {
+      var trade = e.trade, n = trade.length, ok = true;
+      for (var i = 0; i < n && ok; i++) {
+        var giver = trade[i].slot, dates = trade[i].dates, taker = trade[(i + 1) % n].slot;
+        for (var d = 0; d < dates.length; d++) {
+          var idx = engine.idxByIso[dates[d]];
+          if (idx == null) { ok = false; break; }
+          var prevGiverHadOC = !!(prevById[giver] && prevById[giver][idx]);
+          var currGiverCell = currById[giver] && currById[giver][idx];
+          var currTakerCell = currById[taker] && currById[taker][idx];
+          var giverStillOC = currGiverCell && currGiverCell.s === "OC";
+          var takerNowOC = currTakerCell && currTakerCell.s === "OC";
+          if (!prevGiverHadOC || giverStillOC || !takerNowOC) { ok = false; break; }
+        }
+      }
+      if (ok) confirmed++;
+    });
+    result.confirmedCount = confirmed;
+    result.pendingCount = proposed.length - confirmed;
+    return result;
+  }
+
+  function openMetricsModal() {
+    var m = $("#audit-modal"); if (!m) return;
+    $("#audit-modal-title").textContent = "Success metrics";
+    if ($("#audit-modal-help")) $("#audit-modal-help").textContent = "";
+    var list = $("#audit-list"); list.innerHTML = "";
+
+    var metrics = computeSwapMetrics();
+    var wrap = el("div");
+
+    var statsRow = el("div", "metrics-stats");
+    function stat(container, n, label) {
+      var s = el("div", "metrics-stat");
+      s.appendChild(el("strong", null, String(n)));
+      s.appendChild(el("span", null, label));
+      container.appendChild(s);
+    }
+    stat(statsRow, metrics.proposedCount, "Swaps proposed");
+    stat(statsRow, metrics.confirmedCount, "Confirmed in rota");
+    stat(statsRow, metrics.pendingCount, "Not yet confirmed");
+    wrap.appendChild(statsRow);
+
+    var note = el("p", "step-help");
+    note.style.margin = "0 4px 18px";
+    note.textContent = !metrics.hasHistory
+      ? "No prior rota snapshot to compare against yet — this starts showing real numbers once the rota's been refreshed at least once since go-live."
+      : "\u201cConfirmed\u201d checks whether a proposed swap's exact dates now show in the live rota, compared with the snapshot taken at the last rota update.";
+    wrap.appendChild(note);
+
+    var ratings = (Store.feedbackLog || []).filter(function (f) { return f.type === "rating" && f.stars; });
+    var avg = ratings.length ? (ratings.reduce(function (s, f) { return s + f.stars; }, 0) / ratings.length) : null;
+    var ratingRow = el("div", "metrics-stats");
+    stat(ratingRow, avg != null ? avg.toFixed(1) : "—", "Avg rating (" + ratings.length + " responses)");
+    wrap.appendChild(ratingRow);
+
+    var baseWrap = el("div", "card");
+    baseWrap.style.marginTop = "16px"; baseWrap.style.boxShadow = "none"; baseWrap.style.border = "1px solid var(--line)";
+    baseWrap.appendChild(el("div", "kicker", "Baseline comparison"));
+    var p2 = el("p", "step-help");
+    p2.style.marginBottom = "12px";
+    p2.textContent = "For comparing against last year's swap-request emails, counted retrospectively by the rota team.";
+    baseWrap.appendChild(p2);
+    var lbl = el("label", "fld", "Swap requests handled last year (same period)");
+    lbl.setAttribute("for", "baseline-input");
+    baseWrap.appendChild(lbl);
+    var input = document.createElement("input");
+    input.type = "number"; input.id = "baseline-input"; input.min = "0";
+    input.value = (Store.meta && Store.meta.baselineLastYear != null) ? Store.meta.baselineLastYear : "";
+    baseWrap.appendChild(input);
+    var saveBtn = el("button", "metrics-save-btn", "Save baseline");
+    saveBtn.addEventListener("click", function () {
+      var n = parseInt(input.value, 10);
+      if (!Number.isFinite(n) || n < 0) return;
+      Store.saveMeta({ baselineLastYear: n }).then(function () {
+        saveBtn.textContent = "Saved ✓";
+        setTimeout(function () { saveBtn.textContent = "Save baseline"; }, 1200);
+      });
+    });
+    baseWrap.appendChild(saveBtn);
+    wrap.appendChild(baseWrap);
+
+    list.appendChild(wrap);
+    m.classList.add("open");
+    document.body.style.overflow = "hidden";
+  }
+
   function openAuditModal() {
     var m = $("#audit-modal"); if (!m) return;
     $("#audit-modal-title").textContent = "Audit log";
+    if ($("#audit-modal-help")) $("#audit-modal-help").textContent = "Most recent first. Each entry shows who did what when.";
     var list = $("#audit-list"); list.innerHTML = "";
     var entries = Store.auditLog.slice(0, 200);
     if (!entries.length) {
@@ -2315,10 +2808,13 @@
 
   // ---- footer / init ------------------------------------------------------
   $("#rota-range").textContent = fmt(data.dateStart) + " – " + fmt(data.dateEnd);
-  renderAdminBanner();
+  // Wait for Store.loadAll to resolve before checking admin access — otherwise
+  // Store.meta.adminPinHash isn't loaded yet and a device that's never verified
+  // locally would be wrongly offered "set a new admin PIN" even when one
+  // already exists on the server.
   Store.loadAll().then(function (j) {
     allPrefs = j || {}; rebuildPrefsMap();
     if (state.person) { seedUnavailFromPrefs(); }
-    renderAdminBanner();
+    checkAdminAccess();
   });
 })(typeof window !== "undefined" ? window : globalThis);

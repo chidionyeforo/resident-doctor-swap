@@ -489,6 +489,25 @@
   }
   .admin-banner button.admin-btn:hover{background:#f4efe6}
 
+  /* Success metrics modal content — light-background variant of the stat
+     boxes above, since the dark .admin-banner colours aren't legible on the
+     white modal card. */
+  .metrics-stats{display:flex;gap:18px;margin:10px 4px 18px;flex-wrap:wrap}
+  .metrics-stat{font-family:var(--mono);font-size:.82rem}
+  .metrics-stat strong{display:block;font-size:1.5rem;color:var(--ink);font-weight:700}
+  .metrics-stat span{color:var(--muted);font-size:.7rem;letter-spacing:.08em;text-transform:uppercase}
+  .metrics-save-btn{
+    font-family:var(--display);font-weight:600;font-size:.85rem;
+    background:var(--ink);color:#fff;border:none;border-radius:var(--radius-sm);
+    padding:9px 16px;cursor:pointer;margin-top:10px;
+  }
+  .metrics-save-btn:hover{background:var(--teal-dark)}
+  #baseline-input{
+    width:100%;border:1.5px solid var(--line);border-radius:var(--radius-sm);
+    padding:10px 12px;font-family:var(--body);font-size:.95rem;color:var(--ink);
+    box-sizing:border-box;margin-bottom:4px;
+  }
+
   /* Audit log list (admin only) */
   .audit-list{
     max-height:400px;overflow-y:auto;margin-top:14px;
@@ -718,12 +737,12 @@
     letter-spacing:-.005em;color:var(--ink);margin:18px 0 6px;
   }
   .help-body p{margin:6px 0 12px}
-  .help-body .callout{
+  .callout, .help-body .callout{
     background:var(--coral-tint);border-left:3px solid var(--coral);
     padding:11px 14px;border-radius:var(--radius-sm);font-size:.88rem;
     color:var(--coral-dark);margin:14px 0;
   }
-  .help-body .callout strong{color:var(--coral-dark)}
+  .callout strong, .help-body .callout strong{color:var(--coral-dark)}
 
   /* email modal */
   .email-fields{display:flex;flex-direction:column;gap:14px}
@@ -759,6 +778,63 @@
     border-radius:5px;padding:1px 7px;color:var(--teal-dark);
     font-size:.7rem;font-weight:500;
   }
+  .footer-link{
+    background:none;border:none;color:var(--teal-dark);font-family:var(--mono);
+    font-size:.78rem;letter-spacing:.04em;cursor:pointer;padding:0;
+    text-decoration:underline;text-underline-offset:2px;
+  }
+  .footer-link:hover{color:var(--coral-dark)}
+
+  /* star rating widget */
+  .star-row{display:flex;gap:6px;justify-content:center;margin:18px 0 4px}
+  .star-btn{
+    background:none;border:none;font-size:2.1rem;line-height:1;cursor:pointer;
+    color:var(--line);transition:color .12s,transform .1s;padding:2px;
+    touch-action:manipulation;-webkit-tap-highlight-color:transparent;
+  }
+  .star-btn:hover{transform:scale(1.08)}
+  .star-btn.on{color:#f0b429}
+
+  /* wide modal variant for the upload flow */
+  .modal-card-wide{max-width:720px}
+  .upload-summary-grid{
+    display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;
+    margin:14px 0;
+  }
+  .upload-stat{
+    background:var(--paper-warm);border:1px solid var(--line);border-radius:var(--radius-sm);
+    padding:10px 12px;
+  }
+  .upload-stat strong{display:block;font-size:1.3rem;font-family:var(--mono);color:var(--ink)}
+  .upload-stat span{font-size:.68rem;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+  .upload-warning-list, .upload-diff-list{
+    max-height:220px;overflow-y:auto;margin:10px 0;
+    background:#fff;border:1px solid var(--line-soft);border-radius:var(--radius-sm);padding:6px;
+  }
+  .upload-warning-row, .upload-diff-row{
+    padding:7px 9px;font-size:.82rem;border-bottom:1px solid var(--line-soft);
+  }
+  .upload-warning-row:last-child, .upload-diff-row:last-child{border-bottom:none}
+  .upload-diff-row.added{color:var(--ok-dark, #1a7f4e)}
+  .upload-diff-row.removed{color:var(--coral-dark)}
+  #upload-file{
+    display:block;width:100%;padding:12px;border:1.5px dashed var(--line);
+    border-radius:var(--radius-sm);font-size:.86rem;background:var(--paper-warm);
+  }
+
+  /* metrics view */
+  .metric-row{display:flex;gap:14px;flex-wrap:wrap;margin:6px 0 18px}
+  .metric-input-row{display:flex;gap:8px;align-items:center;margin:10px 0}
+  .metric-input-row input{
+    width:110px;padding:9px 10px;border:1.5px solid var(--line);border-radius:var(--radius-sm);
+    font-family:var(--mono);font-size:.9rem;
+  }
+  .metric-input-row button{
+    font-family:var(--display);font-weight:600;font-size:.82rem;
+    background:var(--teal);color:#fff;border:none;border-radius:var(--radius-sm);
+    padding:9px 14px;cursor:pointer;
+  }
+  .stars-mini{color:#f0b429;letter-spacing:1px}
 
   .hide{display:none !important}
 
@@ -885,7 +961,7 @@
 
   <section id="results"></section>
 
-  <footer>The rota team makes all swaps official. Always confirm. <span class="footer-ver">v1.9.0</span></footer>
+  <footer>The rota team makes all swaps official. Always confirm. <span class="footer-ver">v2.0.0</span> · <button id="feedback-open" class="footer-link" type="button">Feedback</button></footer>
 </div>
 
 <button id="restart-float" class="restart-float hide" type="button" aria-label="Back">← Back</button>
@@ -989,7 +1065,7 @@
   </div>
 </div>
 
-<!-- AUDIT MODAL (admin only) -->
+<!-- AUDIT MODAL (admin only — reused for audit trail / roster / feedback list / unavailability / metrics) -->
 <div class="modal" id="audit-modal" role="dialog" aria-labelledby="audit-modal-title" aria-modal="true">
   <div class="modal-card">
     <div class="modal-head">
@@ -999,11 +1075,132 @@
       </div>
       <button class="modal-close" id="audit-close" aria-label="Close">✕</button>
     </div>
-    <p class="step-help" style="margin-bottom:14px">Most recent first. Each entry shows who did what when.</p>
+    <p class="step-help" id="audit-modal-help" style="margin-bottom:14px">Most recent first. Each entry shows who did what when.</p>
     <div id="audit-list" class="audit-list"></div>
   </div>
 </div>
 
+<!-- FEEDBACK MODAL (user-facing, always available) -->
+<div class="modal" id="feedback-modal" role="dialog" aria-labelledby="feedback-modal-title" aria-modal="true">
+  <div class="modal-card">
+    <div class="modal-head">
+      <div>
+        <div class="modal-eyebrow">Feedback</div>
+        <h2 class="modal-title" id="feedback-modal-title">Tell us what needs work</h2>
+      </div>
+      <button class="modal-close" id="feedback-close" aria-label="Close">✕</button>
+    </div>
+    <p class="step-help" style="margin-bottom:14px">Goes straight to the rota team. No need to leave your name unless you want a reply.</p>
+    <div class="shift-filter" id="feedback-type-chips" role="tablist" aria-label="Feedback type">
+      <button type="button" class="filter-chip active" data-type="suggestion">Suggestion</button>
+      <button type="button" class="filter-chip" data-type="bug">Something's wrong</button>
+      <button type="button" class="filter-chip" data-type="other">Something else</button>
+    </div>
+    <div class="email-fields">
+      <div>
+        <label class="fld" for="feedback-text">What's on your mind?</label>
+        <textarea id="feedback-text" rows="4" placeholder="e.g. It suggested a swap I couldn't actually do because…"></textarea>
+      </div>
+      <p id="feedback-msg" style="font-size:.84rem;color:var(--coral-dark);margin:0;min-height:1.2em"></p>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-cancel" id="feedback-cancel" type="button">Cancel</button>
+      <button class="btn-primary" id="feedback-submit" type="button">Send</button>
+    </div>
+  </div>
+</div>
+
+<!-- RATING MODAL (auto-triggered after 5 uses) -->
+<div class="modal" id="rating-modal" role="dialog" aria-labelledby="rating-modal-title" aria-modal="true">
+  <div class="modal-card">
+    <div class="modal-head">
+      <div>
+        <div class="modal-eyebrow">Quick question</div>
+        <h2 class="modal-title" id="rating-modal-title">How's the swap shop working for you?</h2>
+      </div>
+    </div>
+    <div class="star-row" id="star-row" aria-label="Rate 1 to 5 stars">
+      <button type="button" class="star-btn" data-star="1" aria-label="1 star">★</button>
+      <button type="button" class="star-btn" data-star="2" aria-label="2 stars">★</button>
+      <button type="button" class="star-btn" data-star="3" aria-label="3 stars">★</button>
+      <button type="button" class="star-btn" data-star="4" aria-label="4 stars">★</button>
+      <button type="button" class="star-btn" data-star="5" aria-label="5 stars">★</button>
+    </div>
+    <div id="rating-followup" class="hide">
+      <p class="step-help" id="rating-followup-text" style="margin:14px 0 10px"></p>
+      <div class="email-fields">
+        <textarea id="rating-text" rows="3" placeholder="Optional — what would make it better?"></textarea>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-cancel" id="rating-dismiss" type="button">Not now</button>
+      <button class="btn-primary hide" id="rating-submit" type="button">Send</button>
+    </div>
+  </div>
+</div>
+
+<!-- ADMIN PIN GATE -->
+<div class="modal" id="admin-pin-modal" role="dialog" aria-labelledby="admin-pin-title" aria-modal="true">
+  <div class="modal-card">
+    <div class="modal-head">
+      <div>
+        <div class="modal-eyebrow">Admin</div>
+        <h2 class="modal-title" id="admin-pin-title">Admin access</h2>
+      </div>
+    </div>
+    <p class="step-help" id="admin-pin-help" style="margin-bottom:14px"></p>
+    <div class="email-fields">
+      <div>
+        <label class="fld" for="admin-pin-input">Admin PIN</label>
+        <input type="password" id="admin-pin-input" inputmode="numeric" pattern="[0-9]{4,8}" maxlength="8" autocomplete="off" />
+      </div>
+      <div id="admin-pin-confirm-row" class="hide">
+        <label class="fld" for="admin-pin-confirm">Confirm PIN</label>
+        <input type="password" id="admin-pin-confirm" inputmode="numeric" pattern="[0-9]{4,8}" maxlength="8" autocomplete="off" />
+      </div>
+      <p id="admin-pin-msg" style="font-size:.84rem;color:var(--coral-dark);margin:0;min-height:1.2em"></p>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-cancel" id="admin-pin-cancel" type="button">Cancel</button>
+      <button class="btn-primary" id="admin-pin-submit" type="button">Enter</button>
+    </div>
+  </div>
+</div>
+
+<!-- ROTA UPLOAD (admin only) -->
+<div class="modal" id="upload-modal" role="dialog" aria-labelledby="upload-modal-title" aria-modal="true">
+  <div class="modal-card modal-card-wide">
+    <div class="modal-head">
+      <div>
+        <div class="modal-eyebrow">Admin</div>
+        <h2 class="modal-title" id="upload-modal-title">Upload updated rota</h2>
+      </div>
+      <button class="modal-close" id="upload-close" aria-label="Close">✕</button>
+    </div>
+    <div id="upload-step-pick">
+      <p class="step-help" style="margin-bottom:14px">
+        Pick the master rota spreadsheet (.xlsx). It's parsed in your browser — nothing is uploaded anywhere until you review and download the result.
+      </p>
+      <div class="callout" style="margin-bottom:14px">
+        <strong>One thing this can't read automatically:</strong> protected/blocked-day formatting (the black-outlined cells) isn't detectable from the file itself. Any dates already in the current app carry their protected status forward automatically. Genuinely new dates will be flagged below for you to check.
+      </div>
+      <input type="file" id="upload-file" accept=".xlsx" />
+      <p id="upload-msg" style="font-size:.84rem;color:var(--coral-dark);margin:10px 0 0;min-height:1.2em"></p>
+    </div>
+    <div id="upload-step-preview" class="hide">
+      <div id="upload-summary"></div>
+      <div id="upload-warnings"></div>
+      <div id="upload-newdates"></div>
+      <div id="upload-diff"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-cancel" id="upload-cancel" type="button">Cancel</button>
+      <button class="btn-primary hide" id="upload-download" type="button">Download data.js</button>
+    </div>
+  </div>
+</div>
+
+<script src="vendor/xlsx.full.min.js"></script>
 <script src="data.js"></script>
 <script src="app.js"></script>
 </body>
