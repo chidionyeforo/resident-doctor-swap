@@ -162,19 +162,16 @@
     var blocks = [], cur = null;
     sorted.forEach(function (i) {
       var cls = shiftClass(self.cell(label, i).v);
-      var grp = classGroup(cls);
-      // Consecutive daytime shifts (Day / weekend Ward / Evening) group into
-      // one block; nights only group with nights.
-      if (cur && i === cur.end + 1 && grp === cur.grp) {
+      // Blocks merge on EXACT class only (Day-with-Day, Ward-with-Ward, ...).
+      // A Friday E followed by a weekend Ward block are two separate
+      // commitments in practice - someone can keep their Friday E and swap
+      // just the weekend, or vice versa - so they must stay as independently
+      // swappable blocks even though Day/Ward/E are treated as the same
+      // "group" for cross-type ranking purposes elsewhere.
+      if (cur && i === cur.end + 1 && cls === cur.cls) {
         cur.end = i; cur.idxs.push(i);
-        // block's display class: NIGHT stays NIGHT; a mixed daytime block
-        // takes the class of its majority/first meaningful shift.
-        if (cur.cls !== cls && grp === "DAY") {
-          // prefer WARD label if any weekend ward present, else keep first
-          if (cls === "WARD") cur.cls = "WARD";
-        }
       } else {
-        cur = { start: i, end: i, idxs: [i], cls: cls, grp: grp };
+        cur = { start: i, end: i, idxs: [i], cls: cls, grp: classGroup(cls) };
         blocks.push(cur);
       }
     });
@@ -477,6 +474,11 @@
           // so a weekend day-for-ward is a normal like-for-like swap. Only a
           // night traded for a daytime shift is a genuine cross-type.
           var cross = cb.grp !== rb.grp;
+          // Within the same group, an exact class match (ward-for-ward) is
+          // still preferred over a same-group-but-different match (day-for-
+          // ward) whenever both are available - it's a closer like-for-like
+          // even though the broader group makes either one acceptable.
+          var exactMismatch = !cross && cb.cls !== rb.cls;
 
           var cbAdd = cb.idxs.map(function (i) { return { idx: i, cls: shiftClass(self.cell(cl, i).v) }; });
 
@@ -493,6 +495,7 @@
           var sc = equity(rb, cb) + reqAssess.penalty + candAssess.penalty;
           var lenWarns = reqAssess.warnings.concat(candAssess.warnings);
           if (cross) sc += 500; // cross-type always ranks below like-for-like
+          else if (exactMismatch) sc += 50; // still prefer an exact class match when one exists
           var mutualLeg = cb.idxs.some(function (i) { return myWanted[i]; });
           if (mutualLeg) sc -= 100; // dominate ordering
           if (!best || sc < best.sc) best = { cb: cb, sc: sc, mutualLeg: mutualLeg, warns: lenWarns, cross: cross };
@@ -1751,6 +1754,11 @@
       var crossSwaps = res.swaps.filter(function (s) { return s.crossClass; });
       var mutualSwaps = lfl.filter(function (s) { return s.mutual; });
       var otherSwaps = lfl.filter(function (s) { return !s.mutual; });
+      // Split into "same shift type" (Ward-for-Ward) vs "similar shift type"
+      // (Day-for-Ward etc.) so the preference order is visible, not just an
+      // invisible ranking a person has to trust.
+      var exactSwaps = otherSwaps.filter(isExactSwap);
+      var similarSwaps = otherSwaps.filter(function (s) { return !isExactSwap(s); });
 
       // When every direct swap means back-to-back weekends, the three-way
       // routes that avoid it are the better recommendation — show them first.
@@ -1768,9 +1776,16 @@
         mutualSwaps.slice(0, 5).forEach(function (sw, i) { root.appendChild(swapCard(sw, i === 0 && res.chainsReason !== "avoid-b2b")); });
       }
 
-      if (otherSwaps.length) {
-        root.appendChild(el("h3", "res-h", mutualSwaps.length ? "Other direct swaps" : "Direct swaps"));
-        otherSwaps.slice(0, 8).forEach(function (sw, i) { root.appendChild(swapCard(sw, i === 0 && !mutualSwaps.length && res.chainsReason !== "avoid-b2b")); });
+      if (exactSwaps.length) {
+        root.appendChild(el("h3", "res-h", "Direct swaps — same shift type"));
+        exactSwaps.slice(0, 8).forEach(function (sw, i) { root.appendChild(swapCard(sw, i === 0 && !mutualSwaps.length && res.chainsReason !== "avoid-b2b")); });
+      }
+
+      if (similarSwaps.length) {
+        root.appendChild(el("h3", "res-h", "Direct swaps — similar shift type"));
+        var simIntro = el("p", "perblock-intro", "A different daytime shift (Day/Ward/Evening) rather than an exact match — still a normal swap, just less precise.");
+        root.appendChild(simIntro);
+        similarSwaps.slice(0, 8).forEach(function (sw, i) { root.appendChild(swapCard(sw, i === 0 && !mutualSwaps.length && !exactSwaps.length && res.chainsReason !== "avoid-b2b")); });
       }
 
       if (!lfl.length && !(res.chains && res.chains.length)) {
@@ -1792,7 +1807,9 @@
         res.chains.slice(0, 5).forEach(function (ch, i) { root.appendChild(chainCard(ch, !lfl.length && i === 0)); });
       }
 
-      // Cross-type swaps: lowest priority, collapsed by default.
+      // Cross-type swaps (nights for days): lowest priority, never suggested
+      // proactively - only available as a collapsed tab someone has to
+      // deliberately open.
       if (crossSwaps.length) {
         root.appendChild(crossSection(crossSwaps));
       }
@@ -1803,6 +1820,15 @@
 
   // Collapsible section for cross-type (different shift class) swaps — the
   // last-resort option when you're willing to take a less favourable shift.
+  // A swap counts as "exact type" only if every assignment leg is a single,
+  // non-combined block whose return class matches the request class exactly
+  // (Ward-for-Ward, not Day-for-Ward). Combined/split returns are always
+  // treated as the lower "similar type" tier since they're inherently a
+  // less precise match.
+  function isExactSwap(sw) {
+    return sw.assignments.every(function (a) { return !a.combined && a.cb.cls === a.rb.cls; });
+  }
+
   function crossSection(crossSwaps) {
     var det = el("details", "combined-fallback cross-fallback");
     var sum = el("summary", null,
@@ -1848,6 +1874,8 @@
     var crossSwaps = pb.swaps.filter(function (s) { return s.crossClass; });
     var mutuals = lfl.filter(function (s) { return s.mutual; });
     var others = lfl.filter(function (s) { return !s.mutual; });
+    var exactOthers = others.filter(isExactSwap);
+    var similarOthers = others.filter(function (s) { return !isExactSwap(s); });
 
     // If every like-for-like swap for this block means back-to-back weekends,
     // lead with the three-way routes that avoid it.
@@ -1860,9 +1888,16 @@
     if (mutuals.length) {
       mutuals.slice(0, 3).forEach(function (sw, i) { wrap.appendChild(swapCard(sw, i === 0 && !avoidB2b)); });
     }
-    if (others.length) {
-      others.slice(0, 5).forEach(function (sw, i) {
+    if (exactOthers.length) {
+      if (similarOthers.length) wrap.appendChild(el("h4", "res-subh", "Same shift type"));
+      exactOthers.slice(0, 5).forEach(function (sw, i) {
         wrap.appendChild(swapCard(sw, !mutuals.length && i === 0 && !avoidB2b));
+      });
+    }
+    if (similarOthers.length) {
+      if (exactOthers.length) wrap.appendChild(el("h4", "res-subh", "Similar shift type"));
+      similarOthers.slice(0, 5).forEach(function (sw, i) {
+        wrap.appendChild(swapCard(sw, !mutuals.length && !exactOthers.length && i === 0 && !avoidB2b));
       });
     }
     if (!lfl.length) {
