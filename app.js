@@ -425,7 +425,7 @@
       var self = this;
       combined.perBlock = combined.reqBlocks.map(function (b) {
         var r = self._searchFor(reqLabel, b.idxs, unavail, prefs);
-        return { block: b, swaps: r.swaps, chains: r.chains, chainsReason: r.chainsReason, coverOnly: r.coverOnly };
+        return { block: b, swaps: r.swaps, chains: r.chains, chainsReason: r.chainsReason };
       });
     }
     return combined;
@@ -439,7 +439,7 @@
     var reqBlocks = this.groupBlocks(reqLabel, selIdxs);
     var myWanted = (prefs[reqLabel] || {}).wantedOff || {};
 
-    var swaps = [], coverOnly = [], ineligible = [];
+    var swaps = [], ineligible = [];
 
     // The selected days as an addList (idx + class from the requester's grid)
     var selAdd = selIdxs.map(function (i) { return { idx: i, cls: shiftClass(self.cell(reqLabel, i).v) }; });
@@ -576,10 +576,11 @@
           else if (mutual === "soft") score -= 50;
         }
         swaps.push({ label: C.label, grade: C.grade, dept: C.dept, assignments: assignments, score: score, warnings: warnings, mutual: mutual, crossClass: lastResort, cross: crossClass });
-      } else {
-        // Cover is legal (checked above) but no clean return shift exists.
-        coverOnly.push({ label: C.label, grade: C.grade, dept: C.dept, warnings: coverAssess.warnings || [] });
       }
+      // If no return block matched, this candidate is simply not surfaced.
+      // A one-sided "they take your shift, you give nothing back" isn't a
+      // real swap request anyone actually makes, so it's never suggested —
+      // that's what the rota team's own manual cover arrangements are for.
     });
 
     function rank(a, b) {
@@ -593,10 +594,7 @@
       if ((a.score || 0) !== (b.score || 0)) return (a.score || 0) - (b.score || 0);
       return ("" + a.label).localeCompare("" + b.label, undefined, { numeric: true });
     }
-    swaps.sort(rank); coverOnly.sort(function (a, b) {
-      if (a.warnings.length !== b.warnings.length) return a.warnings.length - b.warnings.length;
-      return ("" + a.label).localeCompare("" + b.label, undefined, { numeric: true });
-    });
+    swaps.sort(rank);
 
     var chains = [], chainsReason = null;
     var B2B = "This would mean working back-to-back weekends";
@@ -617,7 +615,7 @@
       }
     }
 
-    return { reqBlocks: reqBlocks, swaps: swaps, chains: chains, chainsReason: chainsReason, coverOnly: coverOnly, ineligible: ineligible };
+    return { reqBlocks: reqBlocks, swaps: swaps, chains: chains, chainsReason: chainsReason, ineligible: ineligible };
   };
 
   /* Standalone mutual-match scan. For a given person, returns any other
@@ -1779,8 +1777,8 @@
         var none = el("div", "card note");
         none.appendChild(el("strong", null, "No like-for-like swap found."));
         none.appendChild(el("p", null, crossSwaps.length
-          ? "Nobody can hand back the same type of shift. There are cross-type options below if you're willing to take a different kind of shift, or the people further down could cover your shift for the rota team to arrange a return."
-          : "Nobody can take all the days you've selected and hand back an equivalent shift. The people below could cover your shift — your rota team can arrange a return manually."));
+          ? "Nobody can hand back the same type of shift. There are cross-type options below if you're willing to take a different kind of shift."
+          : "Nobody can take all the days you've selected and hand back an equivalent shift. Speak to your rota team — they may be able to arrange cover directly."));
         root.appendChild(none);
       } else if (!lfl.length && res.chains && res.chains.length && res.chainsReason !== "avoid-b2b") {
         var n0 = el("div", "card note");
@@ -1797,11 +1795,6 @@
       // Cross-type swaps: lowest priority, collapsed by default.
       if (crossSwaps.length) {
         root.appendChild(crossSection(crossSwaps));
-      }
-
-      if (res.coverOnly.length) {
-        root.appendChild(el("h3", "res-h", "Could cover (no return shift)"));
-        res.coverOnly.slice(0, 6).forEach(function (c) { root.appendChild(coverCard(c)); });
       }
     }
 
@@ -1876,9 +1869,6 @@
       if (pb.chains && pb.chains.length && !avoidB2b) {
         wrap.appendChild(el("p", "perblock-note", "No direct two-way swap for this block — see three-way options below."));
         pb.chains.slice(0, 3).forEach(function (ch, i) { wrap.appendChild(chainCard(ch, i === 0)); });
-      } else if (!crossSwaps.length && pb.coverOnly && pb.coverOnly.length) {
-        wrap.appendChild(el("p", "perblock-note", "No clean swap — these people could cover but with no return shift."));
-        pb.coverOnly.slice(0, 3).forEach(function (c) { wrap.appendChild(coverCard(c)); });
       } else if (!avoidB2b && !crossSwaps.length) {
         wrap.appendChild(el("p", "perblock-note", "No match found for this block."));
       }
@@ -1992,18 +1982,6 @@
       kind: "chain",
       chain: ch
     }));
-    return c;
-  }
-
-  function coverCard(c0) {
-    var c = el("div", "card cover");
-    var head = el("div", "swap-head");
-    head.appendChild(el("span", "slot", "Slot " + c0.label));
-    head.appendChild(el("span", "tag", c0.grade));
-    head.appendChild(el("span", "tag", c0.dept));
-    c.appendChild(head);
-    c.appendChild(el("div", "cover-note", "Free to take your shift on every selected date."));
-    if (c0.warnings.length) c0.warnings.forEach(function (m) { c.appendChild(el("div", "warn", "⚠ " + m)); });
     return c;
   }
 
