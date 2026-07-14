@@ -1,6 +1,6 @@
 # Resident Doctor Swap
 
-**Version 1.8.0** · Rota period 05 Aug 2026 – 02 Feb 2027
+**Version 1.9.0** · Rota period 05 Aug 2026 – 02 Feb 2027
 
 A small static web app that reads your SpR on-call rota and suggests the **best person to ask for a shift swap** when you want a day (or block of days) off.
 
@@ -9,6 +9,8 @@ Everything runs in the browser. There's no server, no database, no login for rea
 The version number appears in the footer of the app itself so anyone using it can confirm what they're on.
 
 ## Changelog
+
+- **v1.9.0** — Weekend **day and ward shifts now count as the same type** for swaps (a weekend day-for-ward is a normal like-for-like); only a night traded for a daytime shift is a genuine cross-type. **Removed rest-day notifications** throughout (everyone knows their own rest rules). **All dates now dd/mm/yyyy** (UK numeric) everywhere — cards, emails, calendar, admin. **Working-pattern preference:** two full-timers, or two LTFT people who share an LTFT day, rank above a full-timer/LTFT pairing (still allowed, just less tidy). **Copy-email button fixed** — copies the actual email text reliably, no longer a link. **Roster record** added to admin: a dated snapshot of every slot's grade/specialty keyed to its permanent spreadsheet column, so there's always a note of who held which slot when the rota changes. **Removed the night-before-LTFT block** (the live rota shows it's worked in practice).
 
 - **v1.8.0** — **Combined-return swaps:** a block can now be swapped for two smaller blocks that add up to the same shift count (e.g. 3 nights for 2 nights + 1 evening/ward), so someone stuck with an awkward block has more routes to a swap. Never leaves anyone doing a lone single night; every rest and safety rule still applies; ranked as a lower-preference option. **Removed the night-before-LTFT rule** — the live rota shows this is worked in practice, so it no longer blocks swaps. **Removed the "less preferable" wording** on cross-type swaps (the badge already makes it clear).
 

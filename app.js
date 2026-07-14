@@ -16,6 +16,13 @@
     if (v === "E") return "E";
     return null;
   }
+  // Matching group: daytime shifts (Day, weekend Ward, Evening support) are
+  // treated as the same kind for swap purposes — a weekend day and a weekend
+  // ward are essentially the same shift. Only NIGHT sits on its own, so the
+  // only genuine "cross-type" swap is a night traded for a daytime shift.
+  function classGroup(cls) {
+    return cls === "NIGHT" ? "NIGHT" : "DAY";
+  }
   var CLASS_LABEL = {
     NIGHT: "Night (N1/N2)",
     DAY: "Day (08:00–21:00)",
@@ -42,7 +49,38 @@
     // when a staff member is structurally off the on-call rota for weeks).
     this._oncallWindows = {};
     this._buildOncallWindows();
+    // Pre-compute each person's LTFT day (the weekday they're regularly LTFT),
+    // or null if they're full-time. Used to prefer swaps between people whose
+    // working pattern lines up: two LTFT people who share an LTFT day, or two
+    // full-timers, swap cleanly; a full-timer swapping with an LTFT person is
+    // workable but less tidy because their week shapes differ.
+    this._ltftDay = {};
+    this._computeLtftDays();
   }
+
+  Engine.prototype._computeLtftDays = function () {
+    var self = this;
+    this.data.staff.forEach(function (s) {
+      var counts = {};
+      (self.data.grid[s.label] || []).forEach(function (c, i) {
+        if (c.s === "LTFT") {
+          var dow = new Date(self.data.dates[i].iso + "T00:00:00").getDay();
+          counts[dow] = (counts[dow] || 0) + 1;
+        }
+      });
+      var best = null, bestN = 0;
+      Object.keys(counts).forEach(function (d) { if (counts[d] > bestN) { bestN = counts[d]; best = +d; } });
+      // Require at least 3 occurrences to count as a genuine regular LTFT day.
+      self._ltftDay[s.label] = bestN >= 3 ? best : null;
+    });
+  };
+  // Returns a compatibility descriptor for two people's working patterns.
+  Engine.prototype.ltftCompat = function (a, b) {
+    var la = this._ltftDay[a], lb = this._ltftDay[b];
+    if (la == null && lb == null) return "both-ft";        // two full-timers
+    if (la != null && lb != null) return la === lb ? "ltft-match" : "ltft-diff";
+    return "mixed";                                         // one LTFT, one FT
+  };
 
   // For each candidate, build a list of [startIdx, endIdx] inclusive ranges
   // representing periods they're on the on-call rota. Long gaps without any
@@ -124,10 +162,19 @@
     var blocks = [], cur = null;
     sorted.forEach(function (i) {
       var cls = shiftClass(self.cell(label, i).v);
-      if (cur && i === cur.end + 1 && cls === cur.cls) {
+      var grp = classGroup(cls);
+      // Consecutive daytime shifts (Day / weekend Ward / Evening) group into
+      // one block; nights only group with nights.
+      if (cur && i === cur.end + 1 && grp === cur.grp) {
         cur.end = i; cur.idxs.push(i);
+        // block's display class: NIGHT stays NIGHT; a mixed daytime block
+        // takes the class of its majority/first meaningful shift.
+        if (cur.cls !== cls && grp === "DAY") {
+          // prefer WARD label if any weekend ward present, else keep first
+          if (cls === "WARD") cur.cls = "WARD";
+        }
       } else {
-        cur = { start: i, end: i, idxs: [i], cls: cls };
+        cur = { start: i, end: i, idxs: [i], cls: cls, grp: grp };
         blocks.push(cur);
       }
     });
@@ -426,11 +473,10 @@
           if (cb.len !== rb.len) return;
           if (cb.idxs.some(function (i) { return unavail[i]; })) return;
 
-          // Cross-type (e.g. weekend nights for weekend days) is allowed but
-          // strictly less preferable — every safety rule still applies via
-          // assessPlacement below. The big penalty guarantees a like-for-like
-          // block always wins when one exists.
-          var cross = cb.cls !== rb.cls;
+          // Blocks match if they're the same group. Day/Ward/E are one group,
+          // so a weekend day-for-ward is a normal like-for-like swap. Only a
+          // night traded for a daytime shift is a genuine cross-type.
+          var cross = cb.grp !== rb.grp;
 
           var cbAdd = cb.idxs.map(function (i) { return { idx: i, cls: shiftClass(self.cell(cl, i).v) }; });
 
@@ -476,11 +522,12 @@
               // Candidate takes the request block, gives away both blocks
               var ca = self.assessPlacement(cl, rbAdd, comboIdxs, cPref);
               if (!ca.ok) continue;
+              var comboGrp = (b1.grp === b2.grp && b1.grp === rb.grp) ? false : true;
               var csc = equity(rb, b1) + equity(rb, b2) + ra.penalty + ca.penalty
-                      + 500 /* combined is always a cross-ish last resort */;
+                      + 500 /* combined split is always a last resort */;
               if (!best || csc < best.sc) {
                 best = { combo: [b1, b2], sc: csc, mutualLeg: false,
-                         warns: ra.warnings.concat(ca.warnings), cross: true, combined: true };
+                         warns: ra.warnings.concat(ca.warnings), cross: comboGrp, combined: true };
               }
             }
           }
@@ -489,7 +536,7 @@
         if (best) {
           if (best.combo) {
             best.combo.forEach(function (b) { b.used = true; });
-            assignments.push({ rb: rb, combo: best.combo, sc: best.sc, warns: best.warns, cross: true, combined: true });
+            assignments.push({ rb: rb, combo: best.combo, sc: best.sc, warns: best.warns, cross: best.cross, combined: true });
           } else {
             best.cb.used = true;
             assignments.push({ rb: rb, cb: best.cb, sc: best.sc, mutualLeg: best.mutualLeg, warns: best.warns, cross: best.cross });
@@ -501,28 +548,34 @@
       if (allMatched && assignments.length) {
         var score = 0;
         var crossClass = assignments.some(function (a) { return a.cross; });
+        var combinedSplit = assignments.some(function (a) { return a.combined; });
+        // Anything that isn't a plain like-for-like single-block trade is a
+        // "last resort" and goes in the collapsed section.
+        var lastResort = crossClass || combinedSplit;
         // Did C also flag the requester's selected dates as their wanted-off?
         var cMutualOnReq = cWanted && selIdxs.some(function (i) { return cWanted[i]; });
         assignments.forEach(function (a) {
           score += a.sc;
           (a.warns || []).forEach(function (w) { if (warnings.indexOf(w) < 0) warnings.push(w); });
-          if (!a.combined && a.cb && !restMatches(a.rb, a.cb)) {
-            warnings.push("Rest days either side differ (" + a.rb.restBeforeIdxs.length + "/" + a.rb.restAfterIdxs.length +
-              " vs " + a.cb.restBeforeIdxs.length + "/" + a.cb.restAfterIdxs.length + ") — the off days travel with the shift, so one of you changes rest");
-          }
         });
+        // Working-pattern compatibility: two full-timers or two LTFT people who
+        // share an LTFT day swap most cleanly. A full-timer paired with an LTFT
+        // person (or two LTFT people with different LTFT days) still works but
+        // is a little less tidy, so it's nudged down the ranking.
+        var compat = self.ltftCompat(reqLabel, cl);
+        if (compat === "mixed" || compat === "ltft-diff") score += 8;
         // Classify mutual: strong = both directions, soft = one direction.
-        // (Cross-type swaps are never treated as mutual — they belong in the
+        // (Last-resort swaps are never treated as mutual — they belong in the
         // less-preferable section regardless.)
         var anyLegMutual = assignments.some(function (a) { return a.mutualLeg; });
         var mutual = null;
-        if (!crossClass) {
+        if (!lastResort) {
           if (cMutualOnReq && anyLegMutual) mutual = "strong";
           else if (cMutualOnReq || anyLegMutual) mutual = "soft";
           if (mutual === "strong") score -= 1000; // top-rank
           else if (mutual === "soft") score -= 50;
         }
-        swaps.push({ label: C.label, grade: C.grade, dept: C.dept, assignments: assignments, score: score, warnings: warnings, mutual: mutual, crossClass: crossClass });
+        swaps.push({ label: C.label, grade: C.grade, dept: C.dept, assignments: assignments, score: score, warnings: warnings, mutual: mutual, crossClass: lastResort, cross: crossClass });
       } else {
         // Cover is legal (checked above) but no clean return shift exists.
         coverOnly.push({ label: C.label, grade: C.grade, dept: C.dept, warnings: coverAssess.warnings || [] });
@@ -605,15 +658,15 @@
   /* Three-way cyclic swap for a single request block. Each leg's merged
      schedule is validated with assessPlacement, same as direct swaps. */
   Engine.prototype._findChains = function (reqLabel, rb, sel, unavail, prefs) {
-    var self = this, K = rb.cls, out = [], seen = {};
+    var self = this, KG = rb.grp, out = [], seen = {};
 
     function prefOf(l) { return (prefs[l] || {}).unavail || null; }
     function blocksOf(l) {
-      // Same class AND same length as the requested block — a three-way must
+      // Same group AND same length as the requested block — a three-way must
       // move the same number of shifts around the loop, or someone's on-call
-      // total changes and the rota is unbalanced.
+      // total changes and the rota is unbalanced. Day/Ward/E count as one group.
       return self.groupBlocks(l, self.oncallShifts(l).map(function (s) { return s.idx; }))
-        .filter(function (b) { return b.cls === K && b.len === rb.len; });
+        .filter(function (b) { return b.grp === KG && b.len === rb.len; });
     }
     function addListOf(owner, block) {
       return block.idxs.map(function (i) { return { idx: i, cls: shiftClass(self.cell(owner, i).v) }; });
@@ -660,8 +713,6 @@
             [cAssess, dAssess, rAssess].forEach(function (a) {
               a.warnings.forEach(function (w) { if (warnings.indexOf(w) < 0) warnings.push(w); });
             });
-            if (!restMatches(rb, cb) || !restMatches(cb, db) || !restMatches(db, rb))
-              warnings.push("Rest days either side aren't identical across all three — check the off days travel cleanly");
 
             out.push({
               C: { label: C.label, grade: C.grade, dept: C.dept },
@@ -711,20 +762,25 @@
 
   var $ = function (s) { return document.querySelector(s); };
   function el(tag, cls, txt) { var e = document.createElement(tag); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; }
+  function pad2(n) { return (n < 10 ? "0" : "") + n; }
+  function ukNumeric(iso) {
+    // dd/mm/yyyy — unambiguous UK format
+    var p = iso.split("-");
+    return p[2] + "/" + p[1] + "/" + p[0];
+  }
+  function ukShort(iso) {
+    // dd/mm — no year, for compact contexts
+    var p = iso.split("-");
+    return p[2] + "/" + p[1];
+  }
   function fmt(iso, dow) {
-    var d = new Date(iso + "T00:00:00");
-    // UK format with padded day (dd Mmm yyyy) for unambiguous display.
-    var s = d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
-    return (dow ? dow + " " : "") + s;
+    return (dow ? dow + " " : "") + ukNumeric(iso);
   }
   function fmtShort(iso) {
-    var d = new Date(iso + "T00:00:00");
-    return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
+    return ukShort(iso);
   }
-  // Pure numeric dd/mm/yyyy for compact contexts
   function fmtNumeric(iso) {
-    var d = new Date(iso + "T00:00:00");
-    return d.toLocaleDateString("en-GB"); // returns dd/mm/yyyy
+    return ukNumeric(iso);
   }
   function chip(type) { return el("span", "chip chip-" + shiftClass(type), type); }
 
@@ -1558,11 +1614,11 @@
   function crossSection(crossSwaps) {
     var det = el("details", "combined-fallback cross-fallback");
     var sum = el("summary", null,
-      "Cross-type swaps — less preferable (" + crossSwaps.length +
+      "Last-resort swaps (" + crossSwaps.length +
       (crossSwaps.length === 1 ? " option" : " options") + ")");
     det.appendChild(sum);
     var intro = el("p", "perblock-intro",
-      "These trade a different kind of shift (for example, weekend nights for weekend days). All the usual rest and safety rules still apply — but you'd be taking a less favourable shift, so only use these if you're set on getting the dates off.");
+      "Nights traded for daytime shifts, or a block split into two smaller ones. Fine to do if you're set on the dates — just less tidy than a straight swap.");
     det.appendChild(intro);
     crossSwaps.slice(0, 6).forEach(function (sw) { det.appendChild(swapCard(sw, false)); });
     return det;
@@ -1661,7 +1717,8 @@
     else if (sw.mutual === "strong") cls += " mutual-strong";
     else if (sw.mutual === "soft") cls += " mutual-soft";
     var c = el("div", cls);
-    if (sw.crossClass) c.appendChild(el("div", "ribbon cross", "Cross-type"));
+    if (sw.cross) c.appendChild(el("div", "ribbon cross", "Night ⇄ day"));
+    else if (sw.crossClass) c.appendChild(el("div", "ribbon cross", "Split swap"));
     else if (sw.mutual === "strong") c.appendChild(el("div", "ribbon mutual", "Mutual swap"));
     else if (sw.mutual === "soft") c.appendChild(el("div", "ribbon mutual-soft", "They're also looking"));
     else if (top) c.appendChild(el("div", "ribbon", "Best match"));
@@ -1674,18 +1731,15 @@
     sw.assignments.forEach(function (a) {
       var ex = el("div", "exchange");
       ex.appendChild(legRow("They take", a.rb.idxs, state.person));
-      var rt1 = restTravel(a.rb); if (rt1) ex.appendChild(el("div", "rest-travel", rt1));
       ex.appendChild(el("div", "swap-arrow", "⇅"));
       if (a.combined && a.combo) {
         // Return is split across two blocks — show each with a "+" between.
         a.combo.forEach(function (b, bi) {
           if (bi > 0) ex.appendChild(el("div", "combo-plus", "＋ and"));
           ex.appendChild(legRow(bi === 0 ? "You take" : "", b.idxs, sw.label));
-          var rt = restTravel(b); if (rt) ex.appendChild(el("div", "rest-travel", rt));
         });
       } else {
         ex.appendChild(legRow("You take", a.cb.idxs, sw.label));
-        var rt2 = restTravel(a.cb); if (rt2) ex.appendChild(el("div", "rest-travel", rt2));
       }
       c.appendChild(ex);
     });
@@ -1699,7 +1753,7 @@
         ? "Both of you have flagged this swap — easy yes"
         : sw.mutual === "soft"
           ? "They've also flagged this date — likely to say yes"
-          : "Like-for-like with matching rest days"));
+          : sw.cross ? "Night traded for a daytime shift — last resort" : sw.crossClass ? "Block split into two — last resort" : "Straight like-for-like swap"));
     }
 
     c.appendChild(buildEmailFooter({
@@ -1721,13 +1775,10 @@
 
     var ex = el("div", "exchange");
     ex.appendChild(legRow("Slot " + ch.C.label + " takes", ch.rb.idxs, state.person));
-    var rtA = restTravel(ch.rb); if (rtA) ex.appendChild(el("div", "rest-travel", rtA));
     ex.appendChild(el("div", "swap-arrow chain-arrow", "↻"));
     ex.appendChild(legRow("Slot " + ch.D.label + " takes", ch.cb.idxs, ch.C.label));
-    var rtB = restTravel(ch.cb); if (rtB) ex.appendChild(el("div", "rest-travel", rtB));
     ex.appendChild(el("div", "swap-arrow chain-arrow", "↻"));
     ex.appendChild(legRow("You take", ch.db.idxs, ch.D.label));
-    var rtC = restTravel(ch.db); if (rtC) ex.appendChild(el("div", "rest-travel", rtC));
     c.appendChild(ex);
 
     if (ch.warnings.length) {
@@ -1891,41 +1942,49 @@
   }
   $("#email-close").addEventListener("click", closeEmailModal);
   $("#email-modal").addEventListener("click", function (e) { if (e.target === $("#email-modal")) closeEmailModal(); });
-  $("#email-copy").addEventListener("click", function () {
-    var text = "Subject: " + $("#email-subject").value + "\n\n" + $("#email-body").value;
+  $("#email-copy").addEventListener("click", function (ev) {
+    if (ev && ev.preventDefault) ev.preventDefault();
+    var subjEl = $("#email-subject"), bodyEl = $("#email-body");
+    var subject = (subjEl && subjEl.value) || "";
+    var body = (bodyEl && bodyEl.value) || "";
+    var text = subject ? ("Subject: " + subject + "\n\n" + body) : body;
     var btn = $("#email-copy");
     function flashBtn(msg) {
-      var t = btn.textContent; btn.textContent = msg;
-      setTimeout(function () { btn.textContent = t; }, 1500);
+      var orig = btn.textContent; btn.textContent = msg;
+      setTimeout(function () { btn.textContent = orig; }, 1500);
     }
-    // Fallback path: select-and-copy via a temporary textarea. Works on
-    // browsers where the async Clipboard API silently rejects.
-    function legacyCopy() {
-      try {
-        var ta = document.createElement("textarea");
-        ta.value = text;
-        ta.setAttribute("readonly", "");
-        ta.style.position = "fixed"; ta.style.left = "-9999px"; ta.style.top = "0";
-        document.body.appendChild(ta);
-        ta.select();
-        ta.setSelectionRange(0, text.length); // iOS needs the explicit range
-        var ok = document.execCommand("copy");
-        document.body.removeChild(ta);
-        if (ok) { flashBtn("Copied"); return true; }
-      } catch (e) {}
-      // Last resort: select the visible body so the user can copy manually
-      var body = $("#email-body");
-      body.focus(); body.select();
-      try { body.setSelectionRange(0, body.value.length); } catch (e) {}
-      flashBtn("Press copy on your keyboard");
-      return false;
+    // Primary path: temporary textarea + execCommand. This is the most reliable
+    // across browsers (including inside modals) and copies exactly `text`, never
+    // a URL or stray selection.
+    function textareaCopy() {
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed"; ta.style.left = "-9999px"; ta.style.top = "0";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      var sel = document.getSelection();
+      var savedRange = sel && sel.rangeCount ? sel.getRangeAt(0) : null;
+      ta.focus(); ta.select();
+      try { ta.setSelectionRange(0, text.length); } catch (e) {}
+      var ok = false;
+      try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+      document.body.removeChild(ta);
+      if (savedRange && sel) { sel.removeAllRanges(); sel.addRange(savedRange); }
+      return ok;
     }
+    // Try execCommand first (synchronous, reliable), then async clipboard API.
+    if (textareaCopy()) { flashBtn("Copied ✓"); return; }
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(text)
-        .then(function () { flashBtn("Copied"); })
-        .catch(function () { legacyCopy(); });
+        .then(function () { flashBtn("Copied ✓"); })
+        .catch(function () {
+          if (bodyEl) { bodyEl.focus(); bodyEl.select(); }
+          flashBtn("Select all, then copy");
+        });
     } else {
-      legacyCopy();
+      if (bodyEl) { bodyEl.focus(); bodyEl.select(); }
+      flashBtn("Select all, then copy");
     }
   });
   $("#email-open").addEventListener("click", function () {
@@ -2160,10 +2219,46 @@
     var auditBtn = el("button", "admin-btn", "View audit log");
     auditBtn.addEventListener("click", function () { openAuditModal(); });
     wrap.appendChild(auditBtn);
+
+    var rosterBtn = el("button", "admin-btn", "Roster record");
+    rosterBtn.addEventListener("click", function () { openRosterModal(); });
+    wrap.appendChild(rosterBtn);
+  }
+
+  // Shows the slot → grade/specialty record, keyed by permanent column id,
+  // plus any historical snapshots. This is the running note of who held which
+  // slot each time the rota spreadsheet changed.
+  function openRosterModal() {
+    var m = $("#audit-modal"); if (!m) return;
+    $("#audit-modal-title").textContent = "Roster record";
+    var list = $("#audit-list"); list.innerHTML = "";
+    var history = (data.rosterHistory || []).slice().reverse();
+    if (!history.length) {
+      // fall back to current live roster
+      history = [{ date: (data.generated || "").slice(0, 10), note: "Current", slots: data.staff.map(function (s) { return { id: s.id, label: s.label, grade: s.grade, dept: s.dept }; }) }];
+    }
+    history.forEach(function (snap) {
+      var hdr = el("div", "audit-row");
+      hdr.style.background = "var(--paper-warm)";
+      hdr.appendChild(el("span", "audit-action", (snap.note || "Snapshot") + " — " + (snap.date ? ukNumeric(snap.date) : "")));
+      list.appendChild(hdr);
+      snap.slots.forEach(function (sl) {
+        var row = el("div", "audit-row");
+        row.appendChild(el("span", "audit-slot", "Slot " + sl.label));
+        row.appendChild(el("span", "audit-action", (sl.grade || "—") + " · " + (sl.dept || "—")));
+        var idTag = el("span", null, "col " + sl.id);
+        idTag.style.color = "var(--muted)"; idTag.style.fontSize = ".72rem"; idTag.style.fontFamily = "var(--mono)";
+        row.appendChild(idTag);
+        list.appendChild(row);
+      });
+    });
+    m.classList.add("open");
+    document.body.style.overflow = "hidden";
   }
 
   function openAuditModal() {
     var m = $("#audit-modal"); if (!m) return;
+    $("#audit-modal-title").textContent = "Audit log";
     var list = $("#audit-list"); list.innerHTML = "";
     var entries = Store.auditLog.slice(0, 200);
     if (!entries.length) {
@@ -2201,7 +2296,7 @@
   function fmtAuditTime(iso) {
     if (!iso) return "";
     var d = new Date(iso);
-    return d.toLocaleDateString("en-GB", { day: "numeric", month: "short" })
+    return ukNumeric(iso.slice(0, 10))
       + " " + d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
   }
 
